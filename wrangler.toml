@@ -1,0 +1,22 @@
+name = "match-it"
+main = "src/index.js"
+compatibility_date = "2026-09-19"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+# Static files are served directly by the platform for any request that
+# matches a file in ./public — the Worker below only ever sees /api/*.
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+[vars]
+# Same-origin by default (site and API are the same Worker now), so this
+# mostly matters if you ever split them again. Harmless to leave as "*".
+ALLOWED_ORIGIN = "*"

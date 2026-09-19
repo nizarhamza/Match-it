@@ -1,0 +1,14 @@
+{
+  "name": "match-it",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Everyone writes a word each round until the whole room lands on the same one.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

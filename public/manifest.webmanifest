@@ -1,0 +1,14 @@
+{
+  "name": "Match It",
+  "short_name": "Match It",
+  "description": "Everyone writes a word. Round after round, until the room lands on the same one.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#17151F",
+  "theme_color": "#17151F",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

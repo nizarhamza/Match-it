@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Match It</title>
+<meta name="description" content="Everyone thinks of a word. Say it out loud, at the same time, round after round, until the whole room lands on the same one." />
+<meta name="theme-color" content="#14131A" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icons/icon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --ink: #17151F;
+    --ink-soft: #201D2C;
+    --paper: #F6F3ED;
+    --paper-soft: #FFFFFF;
+    --signal: #6B5CE7;      /* searching / in progress */
+    --signal-soft: #6B5CE71a;
+    --match: #2FBF8F;       /* reserved for the matched moment */
+    --match-soft: #2FBF8F1f;
+    --text: #E9E6F2;
+    --text-muted: #A6A0BE;
+    --line: #ffffff1a;
+    --danger: #E5636B;
+    --radius: 18px;
+    --radius-sm: 10px;
+    --font-display: "Fraunces", Georgia, serif;
+    --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --ink: #F6F3ED;
+      --ink-soft: #FFFFFF;
+      --text: #241F33;
+      --text-muted: #6B6480;
+      --line: #17151F14;
+      --signal-soft: #6B5CE714;
+      --match-soft: #2FBF8F1a;
+    }
+  }
+  :root[data-theme="light"] {
+    --ink: #F6F3ED;
+    --ink-soft: #FFFFFF;
+    --text: #241F33;
+    --text-muted: #6B6480;
+    --line: #17151F14;
+    --signal-soft: #6B5CE714;
+    --match-soft: #2FBF8F1a;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.5;
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+    -webkit-font-smoothing: antialiased;
+  }
+  html { scroll-padding-top: var(--safe-top); }
+
+  #app {
+    min-height: 100%;
+    max-width: 540px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  a { color: inherit; }
+  button {
+    font-family: inherit;
+    font-size: 1rem;
+    cursor: pointer;
+  }
+  input {
+    font-family: inherit;
+    font-size: 1rem;
+  }
+
+  .btn {
+    appearance: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 0.85em 1.3em;
+    font-weight: 600;
+    background: var(--ink-soft);
+    color: var(--text);
+    border: 1px solid var(--line);
+    transition: transform 0.12s ease, background 0.12s ease;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn-primary {
+    background: var(--signal);
+    color: white;
+    border-color: transparent;
+  }
+  .btn-primary:disabled {
+    background: var(--ink-soft);
+    color: var(--text-muted);
+    cursor: not-allowed;
+  }
+  .btn-ghost {
+    background: transparent;
+    border-color: var(--line);
+    color: var(--text-muted);
+  }
+  .btn-danger {
+    background: transparent;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+  }
+  .btn-block { width: 100%; display: block; }
+
+  input[type="text"] {
+    width: 100%;
+    background: var(--ink-soft);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 0.85em 1em;
+    color: var(--text);
+  }
+  input[type="text"]:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+  }
+  input[type="text"]::placeholder { color: var(--text-muted); }
+
+  .screen {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 22px calc(28px + var(--safe-bottom));
+  }
+
+  /* ---------- Menu ---------- */
+  .wordmark {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 2.6rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+  }
+  .wordmark .dot { color: var(--signal); }
+  .tagline {
+    color: var(--text-muted);
+    margin: 0 0 40px;
+    max-width: 32ch;
+  }
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+  .menu-actions { margin-top: auto; padding-top: 40px; display: flex; flex-direction: column; gap: 12px; }
+
+  details.how {
+    margin-top: 24px;
+    border-top: 1px solid var(--line);
+    padding-top: 18px;
+  }
+  details.how summary {
+    cursor: pointer;
+    font-weight: 600;
+    list-style: none;
+  }
+  details.how summary::-webkit-details-marker { display: none; }
+  details.how summary::after {
+    content: "+";
+    float: right;
+    color: var(--text-muted);
+  }
+  details.how[open] summary::after { content: "–"; }
+  details.how p { color: var(--text-muted); margin: 12px 0 0; }
+
+  /* ---------- Nickname / join form ---------- */
+  .field-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    display: block;
+  }
+  .back-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .back-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    padding: 6px;
+    font-size: 1.1rem;
+  }
+  .screen-title {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    margin: 0 0 24px;
+  }
+
+  /* ---------- Lobby ---------- */
+  .room-code {
+    font-family: var(--font-display);
+    font-size: 2.6rem;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    background: var(--ink-soft);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    padding: 18px;
+    text-align: center;
+    margin: 0 0 6px;
+  }
+  .room-code-hint {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin: 0 0 28px;
+  }
+  .section-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0 0 10px;
+  }
+  .player-list { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-direction: column; gap: 8px; }
+  .player-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--ink-soft);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+  }
+  .dot-status {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .dot-status.on { background: var(--match); }
+  .player-name { font-weight: 600; flex: 1; }
+  .player-tag {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 9px;
+  }
+  .player-tag.host { color: var(--signal); border-color: var(--signal-soft); background: var(--signal-soft); }
+
+  .role-toggle {
+    display: flex;
+    gap: 8px;
+    margin: 18px 0 30px;
+  }
+  .role-toggle button {
+    flex: 1;
+    background: var(--ink-soft);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .role-toggle button.active {
+    color: var(--signal);
+    border-color: var(--signal-soft);
+    background: var(--signal-soft);
+  }
+
+  .lobby-footer { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+  .hint-text { color: var(--text-muted); font-size: 0.9rem; text-align: center; margin: 0; }
+
+  /* ---------- Playing (thread) ---------- */
+  .play-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 18px;
+  }
+  .round-pill {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 4px 12px;
+  }
+  .thread {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse; /* newest round nearest the compose bar */
+    gap: 22px;
+    padding-bottom: 12px;
+  }
+  .round-block { display: flex; flex-direction: column; gap: 8px; }
+  .round-block .round-num {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .word-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .word-row .who {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    width: 34%;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .word-row .word {
+    font-family: var(--font-display);
+    font-size: 1.15rem;
+  }
+  .word-row.mine .who { color: var(--signal); }
+  .word-row.pending .word { color: var(--text-muted); font-family: var(--font-body); }
+
+  .compose {
+    position: sticky;
+    bottom: 0;
+    background: linear-gradient(to top, var(--ink) 60%, transparent);
+    padding-top: 18px;
+    padding-bottom: calc(6px + var(--safe-bottom));
+  }
+  .compose-row { display: flex; gap: 10px; }
+  .compose-row input { flex: 1; }
+  .compose-status {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: 10px 0 0;
+    text-align: center;
+  }
+  .compose-locked {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--ink-soft);
+  }
+  .end-game-row { text-align: center; margin-top: 14px; }
+  .end-game-row button {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  /* ---------- Matched ---------- */
+  .matched-screen {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 28px 22px calc(28px + var(--safe-bottom));
+  }
+  .matched-label {
+    color: var(--match);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0 0 14px;
+  }
+  .matched-word {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 3rem;
+    line-height: 1.1;
+    margin: 0 0 10px;
+    word-break: break-word;
+  }
+  .matched-sub { color: var(--text-muted); margin: 0 0 36px; }
+  .matched-actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 280px; }
+
+  .pulse-ring {
+    width: 84px; height: 84px;
+    border-radius: 50%;
+    border: 2px solid var(--match);
+    margin-bottom: 22px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .pulse-ring::before {
+    content: "";
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: var(--match-soft);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .pulse-ring { animation: pulse 1.8s ease-in-out infinite; }
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--match-soft); }
+    50% { box-shadow: 0 0 0 14px transparent; }
+  }
+
+  /* ---------- Banners / toasts ---------- */
+  .banner {
+    margin: 0 22px 0;
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    border: 1px solid var(--line);
+  }
+  .banner.error { border-color: var(--danger); color: var(--danger); }
+  .banner.info { border-color: var(--signal-soft); background: var(--signal-soft); color: var(--text); }
+
+  .theme-switch {
+    position: fixed;
+    top: calc(16px + var(--safe-top));
+    right: 16px;
+    background: var(--ink-soft);
+    border: 1px solid var(--line);
+    color: var(--text-muted);
+    border-radius: 999px;
+    width: 38px; height: 38px;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 5;
+  }
+
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<button class="theme-switch" id="themeSwitch" aria-label="Toggle light and dark theme">◑</button>
+<div id="app"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------------
+  // Config
+  // ---------------------------------------------------------------------
+  // By default the client talks to the Worker on the same origin ("/api/...",
+  // same-origin WebSocket). If you deployed the Worker to its own workers.dev
+  // subdomain instead of routing it under this Pages domain, pass it once via
+  // ?api=https://match-it.<you>.workers.dev — it's then remembered in
+  // localStorage. See DEPLOY.md.
+  const params = new URLSearchParams(location.search);
+  if (params.get("api")) localStorage.setItem("matchit_api_base", params.get("api"));
+  const API_BASE = (localStorage.getItem("matchit_api_base") || "").replace(/\/$/, "");
+
+  const WS_BASE = API_BASE
+    ? API_BASE.replace(/^http/, "ws")
+    : (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+
+  // ---------------------------------------------------------------------
+  // Tiny state store + view
+  // ---------------------------------------------------------------------
+  const root = document.getElementById("app");
+  let view = "menu"; // menu | nickname | lobby | playing | matched
+  let pendingAction = null; // "create" | "join" — which the nickname screen is for
+  let joinCodeDraft = "";
+
+  let nickname = localStorage.getItem("matchit_nickname") || "";
+  let playerId = localStorage.getItem("matchit_pid") || "";
+  let roomCode = "";
+  let ws = null;
+  let wsReady = false;
+  let connError = "";
+
+  let room = { status: "lobby", round: 0, hostId: null, players: [], submittedCount: 0, activeCount: 0, history: [] };
+  let lastReveal = null; // most recent {round, words, matched, nicknames} for the "someone answered" ticker
+
+  function me() {
+    return room.players.find((p) => p.id === playerId) || null;
+  }
+  function isHost() {
+    return room.hostId === playerId;
+  }
+  function hasSubmittedThisRound() {
+    // We don't get our own submission echoed back until reveal, so track locally.
+    return submittedRound === room.round;
+  }
+  let submittedRound = 0;
+
+  // ---------------------------------------------------------------------
+  // Networking
+  // ---------------------------------------------------------------------
+  async function createRoom() {
+    const res = await fetch(API_BASE + "/api/rooms", { method: "POST" });
+    if (!res.ok) throw new Error("Could not create a room right now.");
+    const data = await res.json();
+    return data.code;
+  }
+
+  function connect(code) {
+    roomCode = code;
+    connError = "";
+    const qs = new URLSearchParams({ nickname: nickname || "Player" });
+    if (playerId) qs.set("pid", playerId);
+    const url = WS_BASE + "/api/rooms/" + code + "/socket?" + qs.toString();
+
+    ws = new WebSocket(url);
+    ws.addEventListener("open", () => { wsReady = true; render(); });
+    ws.addEventListener("close", () => {
+      wsReady = false;
+      if (view !== "menu") {
+        connError = "Connection lost. Reconnecting…";
+        render();
+        setTimeout(() => { if (roomCode) connect(roomCode); }, 1500);
+      }
+    });
+    ws.addEventListener("error", () => {});
+    ws.addEventListener("message", (ev) => {
+      let data;
+      try { data = JSON.parse(ev.data); } catch { return; }
+      handleMessage(data);
+    });
+  }
+
+  function send(payload) {
+    if (ws && wsReady) ws.send(JSON.stringify(payload));
+  }
+
+  function handleMessage(data) {
+    switch (data.type) {
+      case "welcome":
+        playerId = data.playerId;
+        localStorage.setItem("matchit_pid", playerId);
+        localStorage.setItem("matchit_room", data.code);
+        view = view === "playing" || view === "matched" ? view : "lobby";
+        render();
+        break;
+
+      case "state":
+        room = data;
+        if (room.status === "playing" && view !== "matched") view = "playing";
+        if (room.status === "matched") view = "matched";
+        if (room.status === "lobby" && (view === "playing" || view === "matched")) view = "lobby";
+        render();
+        break;
+
+      case "reveal":
+        lastReveal = data;
+        render();
+        break;
+
+      case "error":
+        connError = data.message || "Something went wrong.";
+        render();
+        setTimeout(() => { connError = ""; render(); }, 3500);
+        break;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------
+  async function onCreateRoom() {
+    try {
+      const code = await createRoom();
+      connect(code);
+      view = "lobby";
+      render();
+    } catch (e) {
+      connError = e.message;
+      render();
+    }
+  }
+
+  function onJoinRoom(code) {
+    connect(code);
+    view = "lobby";
+    render();
+  }
+
+  function onSetRole(role) {
+    send({ type: "role", role });
+  }
+  function onStart() { send({ type: "start" }); }
+  function onEnd() { send({ type: "end" }); }
+  function onRematch() { send({ type: "rematch" }); }
+  function onLeave() {
+    send({ type: "leave" });
+    if (ws) ws.close();
+    roomCode = "";
+    localStorage.removeItem("matchit_room");
+    view = "menu";
+    room = { status: "lobby", round: 0, hostId: null, players: [], submittedCount: 0, activeCount: 0, history: [] };
+    render();
+  }
+  function onSubmit(word) {
+    if (!word.trim()) return;
+    submittedRound = room.round;
+    send({ type: "submit", word: word.trim() });
+    render();
+  }
+
+  // ---------------------------------------------------------------------
+  // Rendering — small hand-rolled templating, no framework
+  // ---------------------------------------------------------------------
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function render() {
+    if (view === "menu") return renderMenu();
+    if (view === "nickname") return renderNickname();
+    if (view === "lobby") return renderLobby();
+    if (view === "playing") return renderPlaying();
+    if (view === "matched") return renderMatched();
+  }
+
+  function renderMenu() {
+    root.innerHTML = `
+      <div class="screen">
+        <h1 class="wordmark">Match It<span class="dot">.</span></h1>
+        <p class="tagline">Everyone thinks of a word. Say it at the same time — round after round — until the whole room lands on the same one.</p>
+        ${connError ? `<div class="banner error">${esc(connError)}</div>` : ""}
+        <div class="menu-actions">
+          <button class="btn btn-primary btn-block" id="btnCreate">Create a room</button>
+          <button class="btn btn-block" id="btnJoin">Join with a code</button>
+        </div>
+        <details class="how">
+          <summary>How it works</summary>
+          <p>Everyone in the room privately writes one word. When everyone's in, all the words are shown. If they don't all match, you go again — you can see every word anyone's written so far. No score, no timer, no race. Just: did the room click?</p>
+        </details>
+      </div>
+    `;
+    document.getElementById("btnCreate").onclick = () => { pendingAction = "create"; view = "nickname"; render(); };
+    document.getElementById("btnJoin").onclick = () => { pendingAction = "join"; view = "nickname"; render(); };
+  }
+
+  function renderNickname() {
+    const isJoin = pendingAction === "join";
+    root.innerHTML = `
+      <div class="screen">
+        <div class="back-row">
+          <button class="back-btn" id="btnBack" aria-label="Back">←</button>
+          <h2 class="screen-title" style="margin:0;">${isJoin ? "Join a room" : "Create a room"}</h2>
+        </div>
+        ${connError ? `<div class="banner error">${esc(connError)}</div>` : ""}
+        <label class="field-label" for="nicknameInput">Your name</label>
+        <input type="text" id="nicknameInput" maxlength="24" placeholder="What should we call you?" value="${esc(nickname)}" style="margin-bottom:18px;" />
+        ${isJoin ? `
+          <label class="field-label" for="codeInput">Room code</label>
+          <input type="text" id="codeInput" maxlength="6" inputmode="numeric" placeholder="6-digit code" value="${esc(joinCodeDraft)}" style="margin-bottom:24px; letter-spacing:0.1em;" />
+        ` : ""}
+        <div class="menu-actions" style="padding-top:0;">
+          <button class="btn btn-primary btn-block" id="btnGo">${isJoin ? "Join room" : "Create room"}</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("btnBack").onclick = () => { view = "menu"; render(); };
+    const nameInput = document.getElementById("nicknameInput");
+    nameInput.oninput = (e) => { nickname = e.target.value; };
+    const codeInput = isJoin ? document.getElementById("codeInput") : null;
+    if (codeInput) codeInput.oninput = (e) => {
+      joinCodeDraft = e.target.value.replace(/\D/g, "").slice(0, 6);
+      e.target.value = joinCodeDraft;
+    };
+
+    document.getElementById("btnGo").onclick = () => {
+      const name = nameInput.value.trim().slice(0, 24) || "Player";
+      nickname = name;
+      localStorage.setItem("matchit_nickname", name);
+      if (isJoin) {
+        const code = (codeInput.value || "").trim();
+        if (code.length !== 6) { connError = "Enter the 6-digit room code."; render(); return; }
+        onJoinRoom(code);
+      } else {
+        onCreateRoom();
+      }
+    };
+  }
+
+  function renderLobby() {
+    const selfRole = me() ? me().role : "player";
+    const activeCount = room.players.filter((p) => p.role === "player").length;
+    const canStart = isHost() && activeCount >= 2;
+
+    root.innerHTML = `
+      <div class="screen">
+        <div class="room-code">${esc(roomCode)}</div>
+        <p class="room-code-hint">Share this code — anyone can join at this page.</p>
+        ${connError ? `<div class="banner error">${esc(connError)}</div>` : ""}
+
+        <p class="section-label">In the room (${room.players.length})</p>
+        <ul class="player-list">
+          ${room.players.map((p) => `
+            <li class="player-row">
+              <span class="dot-status ${p.connected ? "on" : ""}"></span>
+              <span class="player-name">${esc(p.nickname)}${p.id === playerId ? " (you)" : ""}</span>
+              ${p.id === room.hostId ? `<span class="player-tag host">Host</span>` : ""}
+              ${p.role === "spectator" ? `<span class="player-tag">Watching</span>` : ""}
+            </li>
+          `).join("")}
+        </ul>
+
+        <p class="section-label" style="margin-top:22px;">You're</p>
+        <div class="role-toggle">
+          <button class="${selfRole === "player" ? "active" : ""}" id="rolePlayer">Playing</button>
+          <button class="${selfRole === "spectator" ? "active" : ""}" id="roleSpectator">Watching</button>
+        </div>
+
+        <div class="lobby-footer">
+          ${isHost() ? `
+            <button class="btn btn-primary btn-block" id="btnStart" ${canStart ? "" : "disabled"}>Start</button>
+            ${!canStart ? `<p class="hint-text">Need at least 2 players.</p>` : ""}
+          ` : `<p class="hint-text">Waiting for the host to start…</p>`}
+          <button class="btn btn-ghost btn-block" id="btnLeave">Leave room</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("rolePlayer").onclick = () => onSetRole("player");
+    document.getElementById("roleSpectator").onclick = () => onSetRole("spectator");
+    document.getElementById("btnLeave").onclick = onLeave;
+    const startBtn = document.getElementById("btnStart");
+    if (startBtn) startBtn.onclick = onStart;
+  }
+
+  function renderPlaying() {
+    const locked = hasSubmittedThisRound();
+    const nicknameOf = (id) => {
+      const p = room.players.find((pp) => pp.id === id);
+      return p ? p.nickname : "Someone";
+    };
+
+    const historyBlocks = room.history.slice().reverse().map((entry) => `
+      <div class="round-block">
+        <div class="round-num">Round ${entry.round}${entry.matched ? " — matched" : ""}</div>
+        ${Object.entries(entry.words).map(([pid, word]) => `
+          <div class="word-row ${pid === playerId ? "mine" : ""}">
+            <span class="who">${esc(nicknameOf(pid))}</span>
+            <span class="word">${esc(word)}</span>
+          </div>
+        `).join("")}
+      </div>
+    `).join("");
+
+    const currentBlock = `
+      <div class="round-block">
+        <div class="round-num">Round ${room.round}</div>
+        ${room.players.filter((p) => p.role === "player").map((p) => `
+          <div class="word-row pending ${p.id === playerId ? "mine" : ""}">
+            <span class="who">${esc(p.nickname)}</span>
+            <span class="word">${p.id === playerId && locked ? "sent" : "…"}</span>
+          </div>
+        `).join("")}
+      </div>
+    `;
+
+    root.innerHTML = `
+      <div class="screen" style="padding-bottom:14px;">
+        <div class="play-header">
+          <span class="round-pill">Round ${room.round}</span>
+          <span class="round-pill">${room.submittedCount} of ${room.activeCount} in</span>
+        </div>
+        ${connError ? `<div class="banner error" style="margin:0 0 14px;">${esc(connError)}</div>` : ""}
+        <div class="thread" id="thread">
+          ${currentBlock}
+          ${historyBlocks}
+        </div>
+        <div class="compose">
+          ${me() && me().role === "spectator" ? `
+            <div class="compose-locked">You're watching this round.</div>
+          ` : locked ? `
+            <div class="compose-locked">Word sent — waiting on the rest of the room.</div>
+          ` : `
+            <form id="submitForm">
+              <div class="compose-row">
+                <input type="text" id="wordInput" maxlength="40" placeholder="Your word…" autocomplete="off" autocorrect="off" spellcheck="false" />
+                <button type="submit" class="btn btn-primary">Send</button>
+              </div>
+            </form>
+          `}
+          ${isHost() ? `<div class="end-game-row"><button id="btnEnd">End this game</button></div>` : ""}
+        </div>
+      </div>
+    `;
+
+    const form = document.getElementById("submitForm");
+    if (form) {
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        const input = document.getElementById("wordInput");
+        onSubmit(input.value);
+      };
+    }
+    const endBtn = document.getElementById("btnEnd");
+    if (endBtn) endBtn.onclick = onEnd;
+  }
+
+  function renderMatched() {
+    const entry = lastReveal && lastReveal.matched ? lastReveal : room.history[room.history.length - 1];
+    const word = entry ? Object.values(entry.words)[0] : "";
+
+    root.innerHTML = `
+      <div class="matched-screen">
+        <div class="pulse-ring" aria-hidden="true"></div>
+        <p class="matched-label">You matched</p>
+        <h1 class="matched-word">${esc(word)}</h1>
+        <p class="matched-sub">Everyone landed on it at the same time.</p>
+        <div class="matched-actions">
+          ${isHost()
+            ? `<button class="btn btn-primary btn-block" id="btnRematch">Play again</button>`
+            : `<p class="hint-text">Waiting for the host to start a new game…</p>`}
+          <button class="btn btn-ghost btn-block" id="btnLeave">Leave room</button>
+        </div>
+      </div>
+    `;
+    const rematchBtn = document.getElementById("btnRematch");
+    if (rematchBtn) rematchBtn.onclick = onRematch;
+    document.getElementById("btnLeave").onclick = onLeave;
+  }
+
+  // ---------------------------------------------------------------------
+  // Theme toggle (persisted override on top of prefers-color-scheme)
+  // ---------------------------------------------------------------------
+  const themeBtn = document.getElementById("themeSwitch");
+  const savedTheme = localStorage.getItem("matchit_theme");
+  if (savedTheme) document.documentElement.setAttribute("data-theme", savedTheme);
+  themeBtn.onclick = () => {
+    const current = document.documentElement.getAttribute("data-theme")
+      || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    const next = current === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("matchit_theme", next);
+  };
+
+  // ---------------------------------------------------------------------
+  // Boot — rejoin a room we were already in, if any
+  // ---------------------------------------------------------------------
+  const savedRoom = localStorage.getItem("matchit_room");
+  if (savedRoom && playerId) {
+    view = "lobby";
+    connect(savedRoom);
+  }
+  render();
+})();
+</script>
+</body>
+</html>
