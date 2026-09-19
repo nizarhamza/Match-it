@@ -180,26 +180,7 @@ export class Room {
 
         room.submissions[playerId] = word;
         changed = true;
-
-        const activeIds = this.activePlayerIds(room);
-        const result = checkMatch(room.submissions, activeIds);
-
-        if (result.complete) {
-          const entry = {
-            round: room.round,
-            words: Object.fromEntries(activeIds.map((id) => [id, room.submissions[id]])),
-            matched: result.matched,
-          };
-          room.history.push(entry);
-          revealPayload = entry;
-
-          if (result.matched) {
-            room.status = "matched";
-          } else {
-            room.round += 1;
-            room.submissions = {};
-          }
-        }
+        revealPayload = this.finalizeRoundIfComplete(room);
         break;
       }
 
@@ -273,7 +254,12 @@ export class Room {
       if (next) room.hostId = next.id;
     }
 
+    // A disconnect can be the thing that completes a round that was only
+    // waiting on this player's word — recheck, same as a real submission.
+    const revealPayload = room.status === "playing" ? this.finalizeRoundIfComplete(room) : null;
+
     await this.saveRoom(room);
+    if (revealPayload) await this.broadcastReveal(room, revealPayload);
     await this.broadcastState(room);
   }
 
@@ -283,10 +269,39 @@ export class Room {
 
   // ---- helpers ----------------------------------------------------------
 
+  // "Active" = who we're actually waiting on right now. A disconnected
+  // player can't submit, so they must not block the round from completing —
+  // otherwise a closed tab softlocks the whole room.
   activePlayerIds(room) {
     return Object.values(room.players)
-      .filter((p) => p.role === "player")
+      .filter((p) => p.role === "player" && p.connected)
       .map((p) => p.id);
+  }
+
+  // Checks whether every currently-active player has a submission in for this
+  // round, and if so, resolves it: match -> room finishes; no match -> a
+  // fresh round starts. Returns the reveal payload to broadcast, or null if
+  // the round isn't complete yet. Called after both a real submission and a
+  // disconnect, since either can be the event that completes a round.
+  finalizeRoundIfComplete(room) {
+    const activeIds = this.activePlayerIds(room);
+    const result = checkMatch(room.submissions, activeIds);
+    if (!result.complete) return null;
+
+    const entry = {
+      round: room.round,
+      words: Object.fromEntries(activeIds.map((id) => [id, room.submissions[id]])),
+      matched: result.matched,
+    };
+    room.history.push(entry);
+
+    if (result.matched) {
+      room.status = "matched";
+    } else {
+      room.round += 1;
+      room.submissions = {};
+    }
+    return entry;
   }
 
   sendTo(ws, payload) {

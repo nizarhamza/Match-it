@@ -1,90 +1,64 @@
 # Deploying Match It
 
-One Cloudflare **Worker with Static Assets** — Cloudflare's current recommended
-pattern (successor to a separate Pages + Worker split): the same deployment
-serves `public/index.html` and friends *and* runs `src/index.js` for
-everything under `/api/*`, including the Durable Object behind each room. One
-project, one command, no CORS to think about, since the site and the API are
-the same origin.
+One Worker, serving both the static site and the room API — no separate
+Pages project needed.
 
-## 0. One-time setup
+## Prerequisites
 
-```bash
-npm install -g wrangler
-wrangler login
-```
+- Node.js installed
+- A Cloudflare account (free plan is enough — the Durable Object class is
+  SQLite-backed, which runs on the free tier)
+- `npx wrangler login` once, to authorize the CLI against your account
+  (opens a browser to approve it)
 
-`wrangler login` opens a browser to authorize against your Cloudflare
-account. If you'd rather use an API token (e.g. to deploy from a script or
-from Claude's sandbox), create one instead — Cloudflare dashboard → **My
-Profile → API Tokens → Create Token → "Edit Cloudflare Workers"** template
-covers everything this project needs — then:
-
-```bash
-export CLOUDFLARE_API_TOKEN=your-token-here
-export CLOUDFLARE_ACCOUNT_ID=your-account-id-here   # dashboard → Workers & Pages → Overview, right sidebar
-```
-
-## 1. Deploy
-
-From the repo root:
-
-```bash
-wrangler deploy
-```
-
-This one command:
-
-- Applies the Durable Object migration (creates the `Room` class on the free
-  **SQLite-backed** Durable Objects, same as Answer It).
-- Uploads everything in `public/` as static assets (free, unlimited, served
-  from Cloudflare's edge — no separate Pages project).
-- Deploys `src/index.js` to handle `/api/*`.
-
-You'll get one URL:
+## 1. Install dependencies
 
 ```
-https://match-it.<your-subdomain>.workers.dev
+npm install
 ```
 
-Open it, create a room, open it again in a second tab/device to join — that's
-the whole test.
+## 2. Deploy
 
-## 2. Custom domain (optional)
+```
+npx wrangler deploy
+```
 
-Cloudflare dashboard → **Workers & Pages → match-it → Settings → Domains &
-Routes → Add Custom Domain**. Once attached, the same single deployment
-serves the site and the API on your domain — nothing else to configure.
+That's it. This publishes `match-it` to
+`https://match-it.<your-subdomain>.workers.dev`, serves `public/` as static
+assets, and provisions the `ROOMS` Durable Object binding from
+`wrangler.toml` automatically.
 
-## 3. Lock down CORS (optional, mostly moot now)
+Open the URL it prints, create a room, send the 6-digit code to whoever
+you're playing with.
 
-`wrangler.toml` ships `ALLOWED_ORIGIN = "*"`. Since the site and the API are
-now the same Worker (same origin), this header barely matters in practice —
-it's only relevant if you ever split the API back out to its own Worker. Safe
-to leave as-is.
+## Sanity-check locally first (optional)
+
+```
+npx wrangler dev
+```
+
+Runs the whole thing — static site and Durable Object — on
+`http://localhost:8787` before you deploy for real.
+
+## If you ever split the site onto its own domain
+
+v1 assumes the client and the Worker share an origin (same-origin
+WebSocket, no CORS needed). If you later move the static site elsewhere —
+a different Pages project, another CDN — point the client at the Worker
+explicitly once, and it remembers it:
+
+```
+https://your-static-site.example/?api=https://match-it.<your-subdomain>.workers.dev
+```
+
+That sets `localStorage.matchit_api_base`, used for every connection after.
+You'd also want to set `ALLOWED_ORIGIN` in `wrangler.toml`'s `[vars]` to the
+static site's real origin (it defaults to `"*"`) and redeploy the Worker.
 
 ## Redeploying after a code change
 
-```bash
-wrangler deploy
+```
+npx wrangler deploy
 ```
 
-That's it — same command for a `src/*.js` change, a `public/index.html`
-change, or both.
-
-## Rooms don't survive a Worker code change that touches the Durable Object's data shape
-
-Durable Object storage is separate from the Worker's code, so shipping a new
-`room.js` doesn't wipe live rooms — but changing the **shape** of what's
-stored in `state.storage` (e.g. renaming a field) will confuse any room whose
-DO instance is still holding the old shape. For a party game with 2-hour room
-TTLs, this is rarely worth worrying about: worst case, tell people to make a
-fresh room.
-
-## If you'd rather keep the old Pages + separate Worker split
-
-Nothing here stops you — put `public/*` in its own Pages project, keep
-`src/*` as a standalone Worker (drop the `[assets]` block from
-`wrangler.toml`), and route `/api/*` to the Worker via a Worker Route or
-Service Binding. The unified model above is just less to maintain for a
-project this size.
+Same command every time — it picks up changes to both `src/` and `public/`.
