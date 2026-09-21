@@ -509,15 +509,25 @@
   }
 
   function connect(code) {
+    // A leftover socket from a previous room (e.g. the boot-time auto-reconnect
+    // racing a fresh "create room") must not keep steering this connection —
+    // close it and ignore anything it still has in flight.
+    if (ws) { try { ws.close(); } catch {} }
+
     roomCode = code;
     connError = "";
     const qs = new URLSearchParams({ nickname: nickname || "Player" });
     if (playerId) qs.set("pid", playerId);
     const url = WS_BASE + "/api/rooms/" + code + "/socket?" + qs.toString();
 
-    ws = new WebSocket(url);
-    ws.addEventListener("open", () => { wsReady = true; render(); });
-    ws.addEventListener("close", () => {
+    const socket = new WebSocket(url);
+    ws = socket;
+    socket.addEventListener("open", () => {
+      if (socket !== ws) return;
+      wsReady = true; render();
+    });
+    socket.addEventListener("close", () => {
+      if (socket !== ws) return; // superseded by a newer connect() — not our concern
       wsReady = false;
       if (view !== "menu") {
         connError = "Connection lost. Reconnecting…";
@@ -525,8 +535,9 @@
         setTimeout(() => { if (roomCode) connect(roomCode); }, 1500);
       }
     });
-    ws.addEventListener("error", () => {});
-    ws.addEventListener("message", (ev) => {
+    socket.addEventListener("error", () => {});
+    socket.addEventListener("message", (ev) => {
+      if (socket !== ws) return;
       let data;
       try { data = JSON.parse(ev.data); } catch { return; }
       handleMessage(data);
