@@ -126,12 +126,27 @@ test("late joiner watches; rematch brings them in; start drops the absent", asyn
   assert.equal(a.state.submittedCount, 0, "spectators can't submit");
   a.send({ type: "rematch" });
   await a.waitFor(() => a.state.status === "lobby", "lobby");
-  assert.ok(a.state.players.every((p) => p.role === "player"));
+  assert.ok(a.state.players.every((p) => p.role === "player"), "late joiner dealt in");
   b.close();
   await a.waitFor(() => !a.state.players.find((p) => p.id === b.pid).connected, "b away");
   a.send({ type: "start" });
   await a.waitFor(() => a.state.status === "playing", "playing");
   assert.equal(a.state.players.length, 2, "disconnected B dropped at start");
+});
+
+test("ending a game deals in late joiners but keeps chosen watchers watching", async () => {
+  const { code, cs: [a, b, w] } = await room("A", "B", "W");
+  w.send({ type: "role", role: "spectator" });
+  await a.waitFor(() => a.state.players.find((p) => p.id === w.pid).role === "spectator", "w watching");
+  a.send({ type: "start" });
+  await a.waitFor(() => a.state.status === "playing", "playing");
+  const late = new Client("Late"); clients.push(late);
+  await late.connect(code);
+  a.send({ type: "end" });
+  await a.waitFor(() => a.state.status === "lobby", "lobby");
+  const role = (id) => a.state.players.find((p) => p.id === id).role;
+  assert.equal(role(late.pid), "player");
+  assert.equal(role(w.pid), "spectator");
 });
 
 test("start needs two connected players", async () => {

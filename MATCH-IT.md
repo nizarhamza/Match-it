@@ -207,7 +207,7 @@ on Cloudflare's free plan.
 | ---------------------------------------------------- | --------------------------------------------------------------------------------- |
 | A player disconnects mid-round, unsubmitted          | Round resolves without them, as if the round simply had fewer active players     |
 | Everyone but one player disconnects                 | Round can't resolve below 2 active players -- waits until someone reconnects, or host ends it |
-| A spectator wants in mid-game                       | Stays a spectator until `rematch` (which resets everyone to `player`) -- no mid-game promotion in v1 |
+| Someone joins mid-game                              | Watches until the room is back in the lobby (`end` or `rematch`), then is dealt in as a player automatically. Anyone who *chose* "Watching" keeps watching |
 | Host disconnects or refreshes                       | `hostId` is the room's *owner* and survives a disconnect. While they're away, the longest-standing connected player acts as host; the owner gets control back on reconnect. Ownership only moves on `leave` or kick |
 | Two people submit near-identical words with a typo   | Matched if the words are 6+ letters (see §3); short words must match exactly     |
 | Singular vs plural ("cloud" / "clouds")             | Matched                                                                          |
@@ -217,8 +217,8 @@ on Cloudflare's free plan.
 
 ## 8. Open questions / parked ideas
 
-- **Mid-game promotion.** A spectator who wants to jump in mid-round has to
-  wait for `rematch`. Worth revisiting if that friction shows up in playtesting.
+- **Mid-game promotion.** A late joiner who wants to jump in mid-game has to
+  wait for the next game. Worth revisiting if that friction shows up in playtesting.
 - **Reconnect grace window.** A refresh mid-round drops you for the second
   it takes to reconnect; if you were the last one the round was waiting on,
   it resolves without you. Rare in practice, but a few seconds' grace before

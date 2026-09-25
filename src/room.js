@@ -127,6 +127,9 @@ export class Room {
         id: playerId,
         nickname,
         role: room.status === "lobby" ? "player" : "spectator",
+        // Arrived mid-game, so watching wasn't their choice: they're dealt in
+        // once the room is back in the lobby.
+        lateJoiner: room.status !== "lobby",
         connected: true,
       };
     }
@@ -180,6 +183,7 @@ export class Room {
       case "role": {
         if (room.status === "lobby" && (data.role === "player" || data.role === "spectator")) {
           player.role = data.role;
+          player.lateJoiner = false; // an explicit choice sticks
           changed = true;
         }
         break;
@@ -229,6 +233,7 @@ export class Room {
           room.status = "lobby";
           room.round = 0;
           room.submissions = {};
+          this.dealInLateJoiners(room);
           changed = true;
         }
         break;
@@ -240,7 +245,7 @@ export class Room {
         room.round = 0;
         room.history = [];
         room.submissions = {};
-        for (const p of Object.values(room.players)) p.role = "player";
+        this.dealInLateJoiners(room);
         changed = true;
         break;
       }
@@ -356,6 +361,17 @@ export class Room {
   }
 
   // ---- helpers ----------------------------------------------------------
+
+  // Back in the lobby: anyone who was only watching because they arrived
+  // mid-game becomes a player. People who chose "Watching" stay watching.
+  dealInLateJoiners(room) {
+    for (const p of Object.values(room.players)) {
+      if (p.lateJoiner) {
+        p.role = "player";
+        p.lateJoiner = false;
+      }
+    }
+  }
 
   // Who can act as host right now: the room's owner (creator, or whoever it
   // was handed to on leave) when connected, otherwise the longest-standing

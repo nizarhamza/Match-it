@@ -23,6 +23,11 @@
     --signal-soft: #6B5CE71a;
     --match: #2FBF8F;       /* reserved for the matched moment */
     --match-soft: #2FBF8F1f;
+    --match-ink: #52D6A9;
+    /* Near-miss clusters within a round: one hue each. */
+    --g1: #6B5CE7; --g1-soft: #7B6CF02e; --g1-line: #8B7DF599;
+    --g2: #95600A; --g2-soft: #E8A33D26; --g2-line: #E8A33D99;
+    --g3: #1F7FB0; --g3-soft: #3AA7E026; --g3-line: #3AA7E099;
     --text: #E9E6F2;
     --text-muted: #A6A0BE;
     --line: #ffffff1a;
@@ -44,6 +49,10 @@
       --line: #17151F14;
       --signal-soft: #6B5CE714;
       --match-soft: #2FBF8F1a;
+      --match-ink: #17795A;
+      --g1-soft: #6B5CE71c; --g1-line: #6B5CE780;
+      --g2-soft: #E8A33D26; --g2-line: #C9861A99;
+      --g3-soft: #3AA7E01f; --g3-line: #2A93C999;
     }
   }
   :root[data-theme="light"] {
@@ -54,6 +63,10 @@
     --line: #17151F14;
     --signal-soft: #6B5CE714;
     --match-soft: #2FBF8F1a;
+    --match-ink: #17795A;
+    --g1-soft: #6B5CE71c; --g1-line: #6B5CE780;
+    --g2-soft: #E8A33D26; --g2-line: #C9861A99;
+    --g3-soft: #3AA7E01f; --g3-line: #2A93C999;
   }
 
   * { box-sizing: border-box; }
@@ -279,6 +292,7 @@
   }
 
   .share-row { margin: 0 0 24px; }
+  .recap { margin-top: 14px; overflow-x: auto; }
   .kick-btn {
     background: none;
     border: none;
@@ -312,60 +326,159 @@
     border-radius: 999px;
     padding: 4px 12px;
   }
+  .progress { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+  .progress i {
+    width: 7px; height: 7px; border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--text-muted);
+    transition: background 200ms cubic-bezier(.22,1,.36,1), box-shadow 200ms;
+  }
+  .progress i.on { background: var(--match); box-shadow: none; }
+
   .thread {
     flex: 1;
-    overflow-y: auto;
+    overflow: auto;
     display: flex;
-    flex-direction: column-reverse; /* newest round nearest the compose bar */
-    gap: 22px;
+    flex-direction: column;
     padding-bottom: 12px;
+    overscroll-behavior: contain;
   }
-  .round-block { display: flex; flex-direction: column; gap: 8px; }
-  .round-block .round-num {
-    font-size: 0.75rem;
+  /* More players than fit: fade the edge that has columns hidden past it. */
+  .thread.more-right { -webkit-mask-image: linear-gradient(to left, transparent, #000 36px); mask-image: linear-gradient(to left, transparent, #000 36px); }
+  .thread-hint {
+    margin: auto 0 20px;
+    padding-top: 12px;
+    text-align: center;
     color: var(--text-muted);
+    font-size: 0.9rem;
+    text-wrap: balance;
   }
-  .word-row {
+
+  /* ---------- Board: one column per player, one row per round ---------- */
+  .board {
+    --rn: 1.4rem;
+    --min-col: 4.25rem;
+    margin-top: auto; /* few rounds: sit down by the compose bar */
     display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 8px 0;
+    flex-direction: column;
+    gap: 8px;
+    min-width: min-content;
+    padding-right: 6px; /* room for the last column's count badge */
   }
-  .word-row .who {
-    font-size: 0.85rem;
+  .thread-hint + .board { margin-top: 0; }
+  .board-row {
+    display: grid;
+    grid-template-columns: var(--rn) repeat(var(--cols), minmax(var(--min-col), 1fr));
+    gap: 6px;
+  }
+  .board-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--ink);
+    padding: 2px 0 6px;
+    align-items: end;
+  }
+  .board .rn {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--ink);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
     color: var(--text-muted);
-    width: 34%;
-    flex-shrink: 0;
+    /* Cover the gaps beside and between rows as columns scroll under, so
+       tile edges and count badges don't peek out around the numbers. */
+    box-shadow:
+      6px 0 0 var(--ink),
+      0 -8px 0 var(--ink), 6px -8px 0 var(--ink),
+      0 8px 0 var(--ink), 6px 8px 0 var(--ink);
+  }
+  .board .rn { align-self: stretch; display: flex; align-items: center; }
+  .board-head .rn { z-index: 2; }
+  .board-head .name {
+    min-width: 0;
+    text-align: center;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .word-row .word {
+  .board-head .name.me { color: var(--signal); }
+  .board-head .name.gone { font-weight: 400; opacity: 0.6; }
+
+  .tile {
+    position: relative;
+    min-width: 0;
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 5px;
+    border-radius: 12px;
+    background: var(--ink-soft);
+    border: 1px solid var(--line);
     font-family: var(--font-display);
-    font-size: 1.15rem;
+    font-size: 1.05rem;
+    line-height: 1.2;
+    text-align: center;
+    hyphens: auto;
+    overflow-wrap: anywhere;
   }
-  .word-row.mine .who { color: var(--signal); }
-  .word-row.pending .word { color: var(--text-muted); font-family: var(--font-body); font-size: 0.9rem; }
-  .word-row.pending.in .word { color: var(--match); }
-  .word-row.pending.away { opacity: 0.55; }
-  .word-row.close .word { color: var(--signal); }
-  .word-row .pair {
-    margin-left: auto;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: var(--signal);
-    background: var(--signal-soft);
+  /* Long words step down in size before they ever break mid-word. */
+  .board.measuring .tile { white-space: nowrap; overflow: hidden; }
+  .board.measuring .count, .board.measuring .tile::after { display: none; }
+  .tile.sm, .tile.status.sent.sm { font-size: 0.9rem; }
+  .tile.xs, .tile.status.sent.xs { font-size: 0.78rem; }
+  .tile.none { background: transparent; border-style: dashed; color: var(--text-muted); font-family: var(--font-body); }
+  .tile[data-g="1"] { --g: var(--g1); --g-soft: var(--g1-soft); --g-line: var(--g1-line); }
+  .tile[data-g="2"] { --g: var(--g2); --g-soft: var(--g2-soft); --g-line: var(--g2-line); }
+  .tile[data-g="3"] { --g: var(--g3); --g-soft: var(--g3-soft); --g-line: var(--g3-line); }
+  .tile[data-g] { background: var(--g-soft); border-color: var(--g-line); }
+  .tile .count {
+    position: absolute;
+    top: -7px;
+    right: -5px;
+    font-family: var(--font-body);
+    font-size: 0.66rem;
+    font-weight: 700;
+    line-height: 1;
+    color: #fff;
+    background: var(--g);
     border-radius: 999px;
-    padding: 1px 8px;
+    padding: 3px 6px;
   }
-  .round-block.current {
-    border: 1px dashed var(--line);
-    border-radius: var(--radius-sm);
-    padding: 10px 14px 4px;
+  .board-row.matched .tile { background: var(--match-soft); border-color: var(--match); }
+
+  /* The round being written: status instead of words. */
+  .board-row.current { padding-top: 10px; border-top: 1px dashed var(--line); }
+  .tile.status { font-family: var(--font-body); font-size: 0.85rem; color: var(--text-muted); background: transparent; border-style: dashed; }
+  .tile.status.in { border-style: solid; border-color: var(--match); color: var(--match-ink); background: var(--match-soft); font-weight: 600; }
+  .tile.status.sent { border-style: solid; font-family: var(--font-display); font-size: 1.05rem; color: var(--text); background: var(--ink-soft); }
+  .tile.status.sent::after {
+    content: "✓";
+    position: absolute; top: -7px; right: -5px;
+    width: 18px; height: 18px; border-radius: 50%;
+    display: grid; place-items: center;
+    font-family: var(--font-body); font-size: 0.65rem; font-weight: 700;
+    color: #0B3326; background: var(--match);
   }
-  .round-block.matched .word { color: var(--match); }
+  .tile.status.away { opacity: 0.55; }
+  .dots { display: inline-flex; gap: 4px; }
+  .dots i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.5; }
+
   @media (prefers-reduced-motion: no-preference) {
-    .round-block.fresh, .reveal-note.fresh { animation: rise 0.45s ease-out; }
+    .dots i { animation: blink 1.2s ease-in-out infinite; }
+    .dots i:nth-child(2) { animation-delay: 0.15s; }
+    .dots i:nth-child(3) { animation-delay: 0.3s; }
+    .board-row.fresh .tile { animation: pop 380ms cubic-bezier(.22,1,.36,1) both; animation-delay: calc(var(--i) * 70ms); }
+    .reveal-note.fresh { animation: rise 0.3s cubic-bezier(.22,1,.36,1); }
+  }
+  @keyframes blink { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+  @keyframes pop {
+    from { opacity: 0; transform: translateY(6px) scale(0.92); }
+    to { opacity: 1; transform: none; }
   }
   @keyframes rise {
     from { opacity: 0; transform: translateY(8px); }
@@ -440,20 +553,15 @@
     word-break: break-word;
   }
   .matched-sub { color: var(--text-muted); margin: 0 0 28px; }
+  /* How the room got there: the same board as the game, scrollable. */
   .path {
     width: 100%;
-    max-width: 360px;
     margin: 0 0 32px;
     text-align: left;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    max-height: 30vh;
-    overflow-y: auto;
+    max-height: 36vh;
+    overflow: auto;
+    padding-top: 2px;
   }
-  .path-round { display: flex; gap: 12px; font-size: 0.9rem; color: var(--text-muted); }
-  .path-num { width: 1.5em; flex-shrink: 0; text-align: right; opacity: 0.7; }
-  .path-words { font-family: var(--font-display); }
   .matched-actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 280px; }
 
   .pulse-ring {
@@ -565,6 +673,8 @@
   // Round we just sent a word for, until the server's state confirms it —
   // keeps the compose bar locked through the round trip.
   let pendingSubmitRound = 0;
+  // What you sent this round, shown back in your own column until reveal.
+  let sentWord = { round: 0, word: "" };
 
   function me() {
     return room.players.find((p) => p.id === playerId) || null;
@@ -706,9 +816,9 @@
     const top = entry.groups && entry.groups[0];
     const n = Object.keys(entry.words).length;
     if (top && top.length > 1) {
-      revealNote = `No match yet — ${top.length} of ${n} said “${entry.words[top[0]]}”.`;
+      revealNote = `No match yet. ${top.length} of ${n} said “${entry.words[top[0]]}”.`;
     } else {
-      revealNote = "No match yet — everyone said something different.";
+      revealNote = "No match yet. Everyone said something different.";
     }
     clearTimeout(revealTimer);
     revealTimer = setTimeout(() => { revealNote = ""; render(); }, 6000);
@@ -774,6 +884,7 @@
     word = word.trim();
     if (!word || !wsReady) return;
     pendingSubmitRound = room.round;
+    sentWord = { round: room.round, word };
     wordDraft = "";
     send({ type: "submit", word });
     render();
@@ -812,7 +923,7 @@
     root.innerHTML = `
       <div class="screen">
         <h1 class="wordmark">Match It<span class="dot">.</span></h1>
-        <p class="tagline">Everyone thinks of a word. Say it at the same time — round after round — until the whole room lands on the same one.</p>
+        <p class="tagline">Everyone writes a word, round after round, until the whole room lands on the same one.</p>
         ${connError ? `<div class="banner error" role="alert">${esc(connError)}</div>` : ""}
         <div class="menu-actions">
           <button class="btn btn-primary btn-block" id="btnCreate">Create a room</button>
@@ -820,7 +931,7 @@
         </div>
         <details class="how">
           <summary>How it works</summary>
-          <p>Everyone in the room privately writes one word. When everyone's in, all the words are shown. If they don't all match, you go again — you can see every word anyone's written so far. No score, no timer, no race. Just: did the room click?</p>
+          <p>Everyone in the room privately writes one word. When everyone's in, all the words are shown. If they don't all match, you go again, with every word written so far in front of you. No score, no timer, no race.</p>
           <p>A good opener: two people say random words, then everyone tries to find the word that sits between them.</p>
         </details>
       </div>
@@ -925,7 +1036,7 @@
             </li>
           `).join("")}
         </ul>
-        ${room.players.length < 2 ? `<p class="hint-text" style="text-align:left;">Nobody else yet — share the code or link.</p>` : ""}
+        ${room.players.length < 2 ? `<p class="hint-text" style="text-align:left;">Nobody else yet. Share the code or link.</p>` : ""}
 
         <p class="section-label" style="margin-top:22px;">You're</p>
         <div class="role-toggle" role="group" aria-label="Your role">
@@ -936,7 +1047,7 @@
         ${hasHistory ? `
           <details class="how" style="margin:0 0 24px;">
             <summary>Last game (${room.history.length} round${room.history.length === 1 ? "" : "s"})</summary>
-            <div class="stack" style="margin-top:14px;">${room.history.slice().reverse().map(roundBlock).join("")}</div>
+            <div class="recap">${boardHTML(room.history, boardColumns(room.history, false), "")}</div>
           </details>
         ` : ""}
 
@@ -953,79 +1064,141 @@
     document.getElementById("roleSpectator").onclick = () => onSetRole("spectator");
     document.getElementById("btnLeave").onclick = onLeave;
     document.getElementById("btnShare").onclick = onShare;
+    const recap = root.querySelector(".recap");
+    if (recap) recap.closest("details").addEventListener("toggle", () => fitTiles(recap));
     root.querySelectorAll("[data-kick]").forEach((b) => { b.onclick = () => onKick(b.dataset.kick); });
     const startBtn = document.getElementById("btnStart");
     if (startBtn) startBtn.onclick = onStart;
   }
 
-  // One resolved round in the thread. Words that landed together get the
-  // signal colour and a "×N" count, so a near-miss reads as progress.
-  function roundBlock(entry) {
-    const names = entry.names || {};
-    const nameOf = (id) => names[id] || (room.players.find((p) => p.id === id) || {}).nickname || "Someone";
-    const groupOf = {};
-    for (const g of entry.groups || []) for (const id of g) groupOf[id] = g.length;
-    const order = (entry.groups || [Object.keys(entry.words)]).flat();
-    return `
-      <div class="round-block ${entry.matched ? "matched" : ""} ${entry.round === freshRound ? "fresh" : ""}">
-        <div class="round-num">Round ${entry.round}${entry.matched ? " — matched" : ""}</div>
-        ${order.filter((id) => id in entry.words).map((id) => `
-          <div class="word-row ${id === playerId ? "mine" : ""} ${!entry.matched && groupOf[id] > 1 ? "close" : ""}">
-            <span class="who">${esc(nameOf(id))}${id === playerId ? " (you)" : ""}</span>
-            <span class="word">${esc(entry.words[id])}</span>
-            ${!entry.matched && groupOf[id] > 1 ? `<span class="pair">×${groupOf[id]}</span>` : ""}
-          </div>
-        `).join("")}
-      </div>
-    `;
+  // Long words step down a size instead of breaking mid-word. Measured, not
+  // guessed from length: column width depends on the screen and the number
+  // of players. One pass to read everything unwrapped, one to apply.
+  function fitTiles(scope) {
+    const board = scope && scope.querySelector(".board");
+    if (!board || board.clientWidth === 0) return; // e.g. inside a closed <details>
+    const tiles = [...board.querySelectorAll(".tile:not(.none):not(.away)")];
+    board.classList.add("measuring");
+    const ratios = tiles.map((t) => t.scrollWidth / Math.max(1, t.clientWidth));
+    board.classList.remove("measuring");
+    tiles.forEach((t, i) => {
+      const r = ratios[i];
+      t.classList.toggle("sm", r > 1 && r <= 1.16);
+      t.classList.toggle("xs", r > 1.16);
+    });
+  }
+
+  // Columns for the board: everyone playing now (join order), then anyone
+  // who wrote a word earlier and has since left or started watching.
+  function boardColumns(history, includeCurrent) {
+    const cols = [];
+    const seen = new Set();
+    const add = (id, name, gone) => {
+      if (!seen.has(id)) { seen.add(id); cols.push({ id, name, gone }); }
+    };
+    if (includeCurrent) {
+      for (const p of room.players) if (p.role === "player") add(p.id, p.nickname, false);
+    }
+    for (const h of history) {
+      for (const id of Object.keys(h.words)) {
+        const live = room.players.find((p) => p.id === id);
+        const name = (h.names && h.names[id]) || (live && live.nickname) || "Someone";
+        add(id, name, includeCurrent && (!live || live.role !== "player"));
+      }
+    }
+    return cols;
+  }
+
+  // The thread as a grid: read down a column to follow one person, across a
+  // row to compare a round. Near-miss clusters share a hue and a count.
+  function boardHTML(history, cols, currentRow) {
+    const head = `
+      <div class="board-row board-head" role="row">
+        <span class="rn" aria-hidden="true"></span>
+        ${cols.map((c) => `<span class="name ${c.id === playerId ? "me" : ""} ${c.gone ? "gone" : ""}" role="columnheader" title="${esc(c.name)}">${c.id === playerId ? "You" : esc(c.name)}</span>`).join("")}
+      </div>`;
+    const rows = history.map((h) => {
+      const hue = {};
+      let n = 0;
+      if (!h.matched) {
+        for (const g of h.groups || []) {
+          if (g.length < 2) continue;
+          n++;
+          for (const id of g) hue[id] = { g: ((n - 1) % 3) + 1, size: g.length };
+        }
+      }
+      const cells = cols.map((c, i) => {
+        if (!(c.id in h.words)) {
+          return `<span class="tile none" style="--i:${i}" role="cell" aria-label="${esc(c.name)}: no word">–</span>`;
+        }
+        const g = hue[c.id];
+        const label = `${c.name}: ${h.words[c.id]}${g ? `, same as ${g.size - 1} other${g.size > 2 ? "s" : ""}` : ""}`;
+        return `<span class="tile" style="--i:${i}" role="cell" ${g ? `data-g="${g.g}"` : ""} aria-label="${esc(label)}">${esc(h.words[c.id])}${g ? `<span class="count" aria-hidden="true">×${g.size}</span>` : ""}</span>`;
+      }).join("");
+      return `
+        <div class="board-row ${h.matched ? "matched" : ""} ${h.round === freshRound ? "fresh" : ""}" role="row">
+          <span class="rn">${h.round}</span>${cells}
+        </div>`;
+    }).join("");
+    return `<div class="board" role="table" aria-label="Words by round" style="--cols:${cols.length}">${head}${rows}${currentRow || ""}</div>`;
   }
 
   function renderPlaying() {
     const locked = hasSubmittedThisRound();
     const spectating = me() && me().role === "spectator";
     const submitted = new Set(room.submittedIds || []);
-    const historyBlocks = room.history.slice().reverse().map(roundBlock).join("");
+    const cols = boardColumns(room.history, true);
 
-    const currentBlock = `
-      <div class="round-block current">
-        <div class="round-num">Round ${room.round} — writing</div>
-        ${room.players.filter((p) => p.role === "player").map((p) => {
-          const isIn = submitted.has(p.id) || (p.id === playerId && locked);
-          const status = !p.connected ? "away" : isIn ? "✓ in" : "thinking…";
-          return `
-            <div class="word-row pending ${p.id === playerId ? "mine" : ""} ${isIn ? "in" : ""} ${!p.connected ? "away" : ""}">
-              <span class="who">${esc(p.nickname)}${p.id === playerId ? " (you)" : ""}</span>
-              <span class="word">${status}</span>
-            </div>
-          `;
+    const currentRow = `
+      <div class="board-row current" role="row" aria-label="Round ${room.round}, writing">
+        <span class="rn">${room.round}</span>
+        ${cols.map((c) => {
+          const p = room.players.find((pp) => pp.id === c.id);
+          if (c.gone || !p) return `<span class="tile status away" role="cell">–</span>`;
+          if (!p.connected) return `<span class="tile status away" role="cell">away</span>`;
+          const isIn = submitted.has(c.id) || (c.id === playerId && locked);
+          if (c.id === playerId && isIn && sentWord.round === room.round) {
+            return `<span class="tile status sent" role="cell" aria-label="You sent ${esc(sentWord.word)}">${esc(sentWord.word)}</span>`;
+          }
+          if (isIn) return `<span class="tile status in" role="cell" aria-label="${esc(c.name)} is in">✓ in</span>`;
+          return `<span class="tile status" role="cell" aria-label="${esc(c.name)} is writing"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></span>`;
         }).join("")}
-      </div>
-    `;
+      </div>`;
 
+    const activeIds = room.players.filter((p) => p.role === "player" && p.connected).map((p) => p.id);
+    const progress = activeIds.map((id) => `<i class="${submitted.has(id) ? "on" : ""}"></i>`).join("");
     const firstRound = room.history.length === 0;
+
+    // Keep the reader's place: stay pinned to the newest round unless they
+    // scrolled up to look at an earlier one.
+    const prev = document.getElementById("thread");
+    const stick = !prev || prev.scrollHeight - prev.scrollTop - prev.clientHeight < 48;
+    const prevTop = prev ? prev.scrollTop : 0;
+    const prevLeft = prev ? prev.scrollLeft : 0;
+
     root.innerHTML = `
       <div class="screen play-screen">
         <div class="play-header">
           <span class="round-pill">Round ${room.round}</span>
-          <span class="round-pill">${room.submittedCount} of ${room.activeCount} in</span>
+          <span class="round-pill" aria-label="${room.submittedCount} of ${room.activeCount} words in"><span class="progress" aria-hidden="true">${progress}</span>${room.submittedCount} of ${room.activeCount} in</span>
         </div>
         ${connError ? `<div class="banner error" role="alert" style="margin:0 0 14px;">${esc(connError)}</div>` : ""}
         ${revealNote ? `<div class="banner info reveal-note ${freshRound ? "fresh" : ""}" role="status" style="margin:0 0 14px;">${esc(revealNote)}</div>` : ""}
         ${room.activeCount < 2 ? `<div class="banner info" style="margin:0 0 14px;">Waiting for another player to reconnect…</div>` : ""}
         <div class="thread" id="thread">
-          ${currentBlock}
-          ${historyBlocks}
+          ${firstRound ? `<p class="thread-hint">Everyone writes any word. If they don't match, go again and aim for a word that connects them.</p>` : ""}
+          ${boardHTML(room.history, cols, currentRow)}
         </div>
         <div class="compose">
           ${spectating ? `
             <div class="compose-locked">You're watching this game.</div>
           ` : locked ? `
-            <div class="compose-locked">Word sent — waiting on the rest of the room.</div>
+            <div class="compose-locked">Word sent. Waiting on the rest of the room.</div>
           ` : `
             <form id="submitForm">
               <label class="visually-hidden" for="wordInput">Your word for round ${room.round}</label>
               <div class="compose-row">
-                <input type="text" id="wordInput" maxlength="40" placeholder="${firstRound ? "Any word to start…" : "A word between them…"}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" value="${esc(wordDraft)}" />
+                <input type="text" id="wordInput" maxlength="40" placeholder="${firstRound ? "Any word to start…" : "A word that connects them…"}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" value="${esc(wordDraft)}" />
                 <button type="submit" class="btn btn-primary" ${wsReady ? "" : "disabled"}>Send</button>
               </div>
             </form>
@@ -1034,6 +1207,14 @@
         </div>
       </div>
     `;
+
+    const thread = document.getElementById("thread");
+    fitTiles(thread);
+    thread.scrollTop = stick ? thread.scrollHeight : prevTop;
+    thread.scrollLeft = prevLeft;
+    const edge = () => thread.classList.toggle("more-right", thread.scrollWidth - thread.scrollLeft - thread.clientWidth > 4);
+    edge();
+    thread.addEventListener("scroll", edge, { passive: true });
 
     if (room.history.some((h) => h.round === freshRound)) freshRound = 0;
 
@@ -1071,13 +1252,8 @@
         <h1 class="matched-word">${esc(word)}</h1>
         <p class="matched-sub">${rounds <= 1 ? "First try. Spooky." : `Everyone landed on it in round ${rounds}.`}</p>
         ${earlier.length ? `
-          <div class="path" aria-label="How you got there">
-            ${earlier.map((h) => `
-              <div class="path-round">
-                <span class="path-num">${h.round}</span>
-                <span class="path-words">${Object.values(h.words).map(esc).join(" · ")}</span>
-              </div>
-            `).join("")}
+          <div class="path" id="path" aria-label="How you got there">
+            ${boardHTML(room.history, boardColumns(room.history, false), "")}
           </div>
         ` : ""}
         <div class="matched-actions">
@@ -1088,6 +1264,9 @@
         </div>
       </div>
     `;
+    const path = document.getElementById("path");
+    fitTiles(path);
+    if (path) path.scrollTop = path.scrollHeight; // land on the winning row
     const rematchBtn = document.getElementById("btnRematch");
     if (rematchBtn) rematchBtn.onclick = onRematch;
     document.getElementById("btnLeave").onclick = onLeave;
