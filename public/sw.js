@@ -1,7 +1,7 @@
 // sw.js — minimal offline shell. Caches the static app; every /api/* call
 // (rooms, the WebSocket) always goes to the network — a stale cache should
 // never serve game traffic.
-const CACHE = "match-it-shell-v1";
+const CACHE = "match-it-shell-v2";
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -23,15 +23,19 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) return; // never cache game traffic
   if (event.request.method !== "GET") return;
 
+  // Network first, cache as the offline fallback: a cache-first shell would
+  // pin players to whatever version they first loaded, forever. Invite links
+  // (/?room=123456) fall back to the cached "/" via ignoreSearch.
   event.respondWith(
-    caches.match(event.request).then(
-      (cached) =>
-        cached ||
-        fetch(event.request).then((res) => {
+    fetch(event.request)
+      .then((res) => {
+        if (res.ok && url.origin === self.location.origin) {
           const copy = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-          return res;
-        }).catch(() => cached)
-    )
+          const key = event.request.mode === "navigate" ? "/" : event.request;
+          caches.open(CACHE).then((cache) => cache.put(key, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(event.request, { ignoreSearch: true }).then((hit) => hit || caches.match("/")))
   );
 });

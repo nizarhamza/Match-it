@@ -25,10 +25,21 @@ Worker deployed (see below); the static file alone can't talk to a room.
 
 ## Status
 
-Scaffolded, not yet deployed. Lobby, the round loop (submit → reveal → repeat
-until unanimous), rematch, and host controls (start / end / kick) are all
-built. Not yet done: real PWA icons (the shipped one is a placeholder SVG),
-and a live deploy.
+Not yet deployed. Lobby, the round loop (submit → reveal → repeat until
+unanimous), invite links, rematch, and host controls (start / end / kick) are
+all built and covered by tests. Not yet done: real PWA icons (the shipped one
+is a placeholder SVG), and a live deploy.
+
+## Test
+
+```
+npm test              # matching rules (pure, no server)
+npm run dev           # in one terminal
+npm run test:room     # protocol tests against the dev server, in another
+```
+
+The heartbeat sweep test needs a server with a short timeout — see the
+comment at the bottom of `test/room.test.mjs`.
 
 ## Stack
 

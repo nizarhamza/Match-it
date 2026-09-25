@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --test test/game-core.test.mjs",
+    "test:room": "node --test --test-concurrency=1 test/room.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4"

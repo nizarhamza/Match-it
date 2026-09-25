@@ -15,7 +15,33 @@ export function normalize(word) {
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s'-]/gu, "") // keep letters/numbers/space/hyphen/apostrophe
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .replace(/^(the|an|a) (?=\S)/, ""); // "the moon" and "moon" are the same answer
+}
+
+/**
+ * How many edits two words may differ by and still count as a typo of each
+ * other. Short words get none: "cat"/"bat" or "house"/"horse" are different
+ * answers, not typos, and in a convergence game a false match ends the game.
+ */
+export function typoTolerance(len) {
+  if (len <= 5) return 0;
+  if (len <= 11) return 1;
+  return 2;
+}
+
+/**
+ * Crude English singular: "clouds" -> "cloud", "boxes" -> "box",
+ * "berries" -> "berry". Only used to compare two words, never shown, so
+ * being wrong on an odd word ("bus" -> "bu") is harmless as long as both
+ * sides get the same treatment.
+ */
+export function singular(word) {
+  if (word.length <= 3) return word;
+  if (word.endsWith("ies")) return word.slice(0, -3) + "y";
+  if (/(s|x|z|ch|sh)es$/.test(word)) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
 }
 
 /** Levenshtein edit distance. Small-input only (single words, not paragraphs). */
@@ -43,16 +69,32 @@ export function levenshtein(a, b) {
 
 /**
  * Are two words "the same" for match purposes? Exact match after normalising,
- * or within a small typo tolerance (ceil(len/6) edits — the same rule Answer It
- * uses for open-answer checking) so a stray typo doesn't cost a real match.
+ * or within a small typo tolerance (see typoTolerance) so a stray typo in a
+ * longer word doesn't cost a real match.
  */
 export function sameWord(a, b) {
   const na = normalize(a);
   const nb = normalize(b);
   if (!na || !nb) return false;
   if (na === nb) return true;
-  const tolerance = Math.ceil(Math.max(na.length, nb.length) / 6);
+  if (singular(na) === singular(nb)) return true; // "cloud" / "clouds"
+  const tolerance = typoTolerance(Math.min(na.length, nb.length));
   return levenshtein(na, nb) <= tolerance;
+}
+
+/**
+ * Cluster a round's words into groups of players who wrote the same word
+ * ({ playerId: word } -> [[id, id], [id], ...]), largest group first. Lets the
+ * client show partial convergence ("2 of you said moon") on a missed round.
+ */
+export function groupWords(words) {
+  const groups = [];
+  for (const [id, word] of Object.entries(words)) {
+    const group = groups.find((g) => sameWord(words[g[0]], word));
+    if (group) group.push(id);
+    else groups.push([id]);
+  }
+  return groups.sort((x, y) => y.length - x.length);
 }
 
 /**

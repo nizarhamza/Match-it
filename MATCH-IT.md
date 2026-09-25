@@ -42,7 +42,8 @@ converges.
   round: 0,
   players: { [id]: Player },
   submissions: { [playerId]: "raw word" },  // this round only, cleared on advance
-  history: [ { round, words: {playerId: word}, matched } ]
+  history: [ { round, words: {playerId: word}, names: {playerId: nickname},
+               groups: [[playerId, ...], ...], matched } ]
 }
 ```
 
@@ -64,22 +65,42 @@ normalize(word):
   -> lowercase
   -> strip punctuation/symbols (keep letters, numbers, space, hyphen, apostrophe)
   -> collapse whitespace, trim
+  -> drop a leading article ("the moon" -> "moon")
 
 sameWord(a, b):
   normalize(a) === normalize(b)
-  OR levenshtein(normalize(a), normalize(b)) <= ceil(maxLen / 6)
-    -- the same typo-tolerance rule Answer It uses for open-answer checking
+  OR singular(a) === singular(b)          -- "cloud" / "clouds", "berry" / "berries"
+  OR levenshtein(a, b) <= tolerance(minLen)
+       tolerance: <=5 chars -> 0, 6-11 -> 1, 12+ -> 2
 ```
+
+Short words get no typo tolerance on purpose: "cat"/"bat" or "house"/"horse"
+are different answers, and in a convergence game a false match ends the game.
+
+Each history entry also carries `groups` -- the round's words clustered by
+`sameWord`, largest first -- so the client can show partial convergence on a
+miss ("2 of 3 said steam") instead of a flat list.
 
 All-pairs `sameWord` -> **matched**, room status becomes `matched`, game over
 (host can rematch). Otherwise -> a fresh round begins with the same player
 set; submissions clear, everyone's word from the round that just resolved
 stays in `history` forever.
 
-A disconnect is treated the same as a submission for completion purposes: if
-a round was only waiting on a player who then closes their tab, the round
-resolves as soon as they drop rather than hanging forever. (They just won't
-have a word in that round's `history` entry.)
+A disconnect, `leave`, or `kick` is treated the same as a submission for
+completion purposes: if a round was only waiting on that player, it resolves
+as soon as they're gone rather than hanging forever. (They just won't have a
+word in that round's `history` entry.)
+
+**What counts as disconnected.** A player is connected iff they have a live
+socket. Three paths keep that true:
+- a normal close (`webSocketClose`) -- ignored if the same player already has
+  a newer socket open, so a refresh that races its own close stays connected;
+- a **heartbeat**: clients `ping` every 20s, and each ping sweeps out sockets
+  silent for 90s (`STALE_SOCKET_MS`). This is how the room notices a phone
+  that lost signal or locked its screen without ever sending a close;
+- **reconciliation** on every connect and sweep: players marked connected
+  with no socket at all (a deploy or runtime restart drops every socket
+  without close events) are flipped to disconnected.
 
 ## 4. Room lifecycle
 
@@ -124,14 +145,29 @@ idle room costs nothing between messages, same as Answer It / Find It.
 | Type      | Payload                                                                        |
 | --------- | ----------------------------------------------------------------------------------- |
 | `welcome` | `{ playerId, code }` -- sent once on connect; client persists the id for reconnect |
-| `state`   | Full room snapshot: status, round, hostId, players, submittedCount/activeCount, history |
-| `reveal`  | `{ round, words, matched, nicknames }` -- sent once, the moment a round resolves    |
+| `state`   | Full room snapshot: status, round, hostId (effective), players, submittedIds, submittedCount/activeCount, history |
+| `reveal`  | `{ round, words, names, groups, matched, nicknames }` -- sent once, the moment a round resolves |
 | `error`   | `{ code, message }`                                                                  |
 | `pong`    | `{ t, serverNow }`                                                                   |
 
 `state` always carries the full `history`; an in-progress round's words are
-never in it -- only `submittedCount` -- so nobody sees a partial round before
-they've locked in their own word.
+never in it -- only `submittedIds` (who, not what) -- so nobody sees a
+partial round before they've locked in their own word. A player's first
+`submit` in a round is final; later ones are ignored.
+
+**Refusals and close codes.** Joining a room that doesn't exist or is full
+(16 players) still upgrades, then sends an `error` and closes with a code the
+client treats as final, so it stops auto-reconnecting:
+
+| Close | `error.code`     | Meaning                           |
+| ----- | ---------------- | --------------------------------- |
+| 4404  | `room_not_found` | No such room (or it expired)      |
+| 4409  | `room_full`      | 16 players already                |
+| 4403  | `kicked`         | Removed by the host               |
+| 4000  | --               | Swept as stale; client reconnects |
+
+The client acts on the `error` message rather than waiting for the close,
+since a close handshake can sit in CLOSING.
 
 ## 6. Architecture
 
@@ -172,19 +208,22 @@ on Cloudflare's free plan.
 | A player disconnects mid-round, unsubmitted          | Round resolves without them, as if the round simply had fewer active players     |
 | Everyone but one player disconnects                 | Round can't resolve below 2 active players -- waits until someone reconnects, or host ends it |
 | A spectator wants in mid-game                       | Stays a spectator until `rematch` (which resets everyone to `player`) -- no mid-game promotion in v1 |
-| Host disconnects                                    | Host role passes to the next connected player                                     |
-| Two people submit near-identical words with a typo   | Matched anyway -- `sameWord`'s Levenshtein tolerance covers it                    |
+| Host disconnects or refreshes                       | `hostId` is the room's *owner* and survives a disconnect. While they're away, the longest-standing connected player acts as host; the owner gets control back on reconnect. Ownership only moves on `leave` or kick |
+| Two people submit near-identical words with a typo   | Matched if the words are 6+ letters (see §3); short words must match exactly     |
+| Singular vs plural ("cloud" / "clouds")             | Matched                                                                          |
+| Host starts with someone disconnected in the lobby | Disconnected players are dropped at `start`; if they come back they join as watchers |
+| Two rooms created with the same random code         | The Room answers `/create` with 409 and the Worker rolls a new code (5 tries)    |
 | Room idle for 2 hours                                | Durable Object storage cleared on the TTL alarm, same as Answer It                |
 
 ## 8. Open questions / parked ideas
 
 - **Mid-game promotion.** A spectator who wants to jump in mid-round has to
   wait for `rematch`. Worth revisiting if that friction shows up in playtesting.
-- **Reconnect grace window.** A refresh mid-round currently just reconnects
-  and picks up where it left off; there's no "N seconds before you're
-  dropped" timer. Not currently a real risk (see §3's disconnect handling),
-  but worth another look if that ever feels wrong in practice.
+- **Reconnect grace window.** A refresh mid-round drops you for the second
+  it takes to reconnect; if you were the last one the round was waiting on,
+  it resolves without you. Rare in practice, but a few seconds' grace before
+  a close counts as a disconnect would fix it.
 - **Big-screen / spectator-focused view**, like Answer It's, for playing with
   a shared screen instead of everyone on their own phone.
-- **Room size cap.** None enforced beyond ">=2 to start." Fine at
-  friend-group scale; worth a cap before sharing a room link publicly.
+- **Nickname clashes.** Two players can both be "Sam". Harmless (ids are
+  what matter) but confusing in the thread.

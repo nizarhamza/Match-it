@@ -22,17 +22,23 @@ export default {
     }
 
     if (url.pathname === "/api/rooms" && request.method === "POST") {
-      const code = generateRoomCode();
-      const id = env.ROOMS.idFromName(code);
-      const stub = env.ROOMS.get(id);
-      const res = await stub.fetch("https://room/create", {
-        method: "POST",
-        body: JSON.stringify({ code }),
-        headers: { "content-type": "application/json" },
-      });
-      const body = await res.text();
-      return new Response(body, {
-        status: res.status,
+      // The Room answers 409 if its code is already live; roll a new one.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const code = generateRoomCode();
+        const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+        const res = await stub.fetch("https://room/create", {
+          method: "POST",
+          body: JSON.stringify({ code }),
+          headers: { "content-type": "application/json" },
+        });
+        if (res.status === 409) continue;
+        return new Response(await res.text(), {
+          status: res.status,
+          headers: { ...corsHeaders, "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: "no_free_code" }), {
+        status: 503,
         headers: { ...corsHeaders, "content-type": "application/json" },
       });
     }

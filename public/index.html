@@ -278,6 +278,17 @@
     background: var(--signal-soft);
   }
 
+  .share-row { margin: 0 0 24px; }
+  .kick-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    padding: 4px 6px;
+    font-size: 0.9rem;
+    border-radius: 6px;
+  }
+  .kick-btn:hover { color: var(--danger); }
+
   .lobby-footer { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
   .hint-text { color: var(--text-muted); font-size: 0.9rem; text-align: center; margin: 0; }
 
@@ -289,6 +300,10 @@
     padding-bottom: 16px;
     border-bottom: 1px solid var(--line);
     margin-bottom: 18px;
+  }
+  /* Keep the header clear of the fixed theme button on narrow screens. */
+  @media (max-width: 640px) {
+    .play-header { padding-right: 48px; }
   }
   .round-pill {
     font-size: 0.8rem;
@@ -330,7 +345,41 @@
     font-size: 1.15rem;
   }
   .word-row.mine .who { color: var(--signal); }
-  .word-row.pending .word { color: var(--text-muted); font-family: var(--font-body); }
+  .word-row.pending .word { color: var(--text-muted); font-family: var(--font-body); font-size: 0.9rem; }
+  .word-row.pending.in .word { color: var(--match); }
+  .word-row.pending.away { opacity: 0.55; }
+  .word-row.close .word { color: var(--signal); }
+  .word-row .pair {
+    margin-left: auto;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--signal);
+    background: var(--signal-soft);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  .round-block.current {
+    border: 1px dashed var(--line);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px 4px;
+  }
+  .round-block.matched .word { color: var(--match); }
+  @media (prefers-reduced-motion: no-preference) {
+    .round-block.fresh, .reveal-note.fresh { animation: rise 0.45s ease-out; }
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  /* The play screen is a fixed-height column so the thread scrolls and the
+     compose bar stays pinned, instead of the whole page growing. */
+  .play-screen {
+    flex: none; /* .screen's flex:1 would otherwise override the height */
+    height: calc(100dvh - var(--safe-top) - var(--safe-bottom));
+    padding-bottom: 14px;
+  }
+  .play-screen .thread { min-height: 0; }
 
   .compose {
     position: sticky;
@@ -390,7 +439,21 @@
     margin: 0 0 10px;
     word-break: break-word;
   }
-  .matched-sub { color: var(--text-muted); margin: 0 0 36px; }
+  .matched-sub { color: var(--text-muted); margin: 0 0 28px; }
+  .path {
+    width: 100%;
+    max-width: 360px;
+    margin: 0 0 32px;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 30vh;
+    overflow-y: auto;
+  }
+  .path-round { display: flex; gap: 12px; font-size: 0.9rem; color: var(--text-muted); }
+  .path-num { width: 1.5em; flex-shrink: 0; text-align: right; opacity: 0.7; }
+  .path-words { font-family: var(--font-display); }
   .matched-actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 280px; }
 
   .pulse-ring {
@@ -482,9 +545,26 @@
   let ws = null;
   let wsReady = false;
   let connError = "";
+  let reconnectAttempts = 0;
+  let reconnectTimer = null;
 
-  let room = { status: "lobby", round: 0, hostId: null, players: [], submittedCount: 0, activeCount: 0, history: [] };
-  let lastReveal = null; // most recent {round, words, matched, nicknames} for the "someone answered" ticker
+  const FATAL_CLOSE = {
+    4403: "The host removed you from the room.",
+    4404: "That room doesn't exist (or has expired).",
+    4409: "That room is full.",
+  };
+  const FATAL_ERRORS = new Set(["kicked", "room_not_found", "room_full"]);
+
+  const EMPTY_ROOM = { status: "lobby", round: 0, hostId: null, players: [], submittedIds: [], submittedCount: 0, activeCount: 0, history: [] };
+  let room = EMPTY_ROOM;
+  let lastReveal = null; // most recent {round, words, groups, matched, nicknames}
+
+  // The word you're typing survives re-renders — every other player's submit
+  // triggers one, and wiping a half-typed word mid-thought is maddening.
+  let wordDraft = "";
+  // Round we just sent a word for, until the server's state confirms it —
+  // keeps the compose bar locked through the round trip.
+  let pendingSubmitRound = 0;
 
   function me() {
     return room.players.find((p) => p.id === playerId) || null;
@@ -493,10 +573,8 @@
     return room.hostId === playerId;
   }
   function hasSubmittedThisRound() {
-    // We don't get our own submission echoed back until reveal, so track locally.
-    return submittedRound === room.round;
+    return (room.submittedIds || []).includes(playerId) || pendingSubmitRound === room.round;
   }
-  let submittedRound = 0;
 
   // ---------------------------------------------------------------------
   // Networking
@@ -512,9 +590,14 @@
     // A leftover socket from a previous room (e.g. the boot-time auto-reconnect
     // racing a fresh "create room") must not keep steering this connection —
     // close it and ignore anything it still has in flight.
-    if (ws) { try { ws.close(); } catch {} }
+    const old = ws;
+    ws = null;
+    if (old) { try { old.close(); } catch {} }
+    clearTimeout(reconnectTimer);
 
+    if (code !== roomCode) { room = EMPTY_ROOM; lastReveal = null; wordDraft = ""; revealNote = ""; }
     roomCode = code;
+    wsReady = false;
     connError = "";
     const qs = new URLSearchParams({ nickname: nickname || "Player" });
     if (playerId) qs.set("pid", playerId);
@@ -526,13 +609,28 @@
       if (socket !== ws) return;
       wsReady = true; render();
     });
-    socket.addEventListener("close", () => {
+    // Heartbeat: the room drops sockets it hasn't heard from in 90s, which is
+    // how it notices a phone that went dark without closing its connection.
+    const heartbeat = setInterval(() => {
+      if (socket !== ws || socket.readyState > 1) { clearInterval(heartbeat); return; }
+      if (socket.readyState === 1) socket.send(JSON.stringify({ type: "ping", t: Date.now() }));
+    }, 20000);
+    socket.addEventListener("close", (ev) => {
       if (socket !== ws) return; // superseded by a newer connect() — not our concern
       wsReady = false;
-      if (view !== "menu") {
+      // The server closes with one of these when retrying can't help (bad
+      // code, full room, kicked) — drop back to the menu instead of looping.
+      if (FATAL_CLOSE[ev.code]) {
+        exitRoom(FATAL_CLOSE[ev.code], ev.code !== 4403);
+        return;
+      }
+      if (view !== "menu" && roomCode) {
+        reconnectAttempts++;
         connError = "Connection lost. Reconnecting…";
         render();
-        setTimeout(() => { if (roomCode) connect(roomCode); }, 1500);
+        const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 10000);
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => { if (roomCode) connect(roomCode); }, delay);
       }
     });
     socket.addEventListener("error", () => {});
@@ -552,6 +650,8 @@
     switch (data.type) {
       case "welcome":
         playerId = data.playerId;
+        reconnectAttempts = 0;
+        connError = "";
         localStorage.setItem("matchit_pid", playerId);
         localStorage.setItem("matchit_room", data.code);
         view = view === "playing" || view === "matched" ? view : "lobby";
@@ -560,7 +660,9 @@
 
       case "state":
         room = data;
-        if (room.status === "playing" && view !== "matched") view = "playing";
+        if (room.status !== "playing" || room.round !== pendingSubmitRound) pendingSubmitRound = 0;
+        if (room.status === "lobby") freshRound = 0;
+        if (room.status === "playing") view = "playing";
         if (room.status === "matched") view = "matched";
         if (room.status === "lobby" && (view === "playing" || view === "matched")) view = "lobby";
         render();
@@ -568,15 +670,48 @@
 
       case "reveal":
         lastReveal = data;
+        freshRound = data.round;
+        if (!data.matched) flashReveal(data);
         render();
         break;
 
       case "error":
-        connError = data.message || "Something went wrong.";
-        render();
-        setTimeout(() => { connError = ""; render(); }, 3500);
+        // Fatal ones arrive just before the server closes the socket. Act on
+        // the message itself: the close handshake can linger in CLOSING.
+        if (FATAL_ERRORS.has(data.code)) { exitRoom(data.message, data.code !== "kicked"); break; }
+        showBanner(data.message || "Something went wrong.");
         break;
     }
+  }
+
+  // Short-lived banner that doesn't clobber a newer one when its timer fires.
+  let bannerTimer = null;
+  let bannerKind = "error";
+  function showBanner(message, ms = 3500, kind = "error") {
+    connError = message;
+    bannerKind = kind;
+    render();
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => {
+      if (connError === message) { connError = ""; bannerKind = "error"; render(); }
+    }, ms);
+  }
+
+  // A missed round is the most common moment in the game, so it gets a
+  // one-line summary of how close the room got instead of a silent re-render.
+  let revealNote = "";
+  let freshRound = 0; // animate this round's block once, on the render that first shows it
+  let revealTimer = null;
+  function flashReveal(entry) {
+    const top = entry.groups && entry.groups[0];
+    const n = Object.keys(entry.words).length;
+    if (top && top.length > 1) {
+      revealNote = `No match yet — ${top.length} of ${n} said “${entry.words[top[0]]}”.`;
+    } else {
+      revealNote = "No match yet — everyone said something different.";
+    }
+    clearTimeout(revealTimer);
+    revealTimer = setTimeout(() => { revealNote = ""; render(); }, 6000);
   }
 
   // ---------------------------------------------------------------------
@@ -606,19 +741,41 @@
   function onStart() { send({ type: "start" }); }
   function onEnd() { send({ type: "end" }); }
   function onRematch() { send({ type: "rematch" }); }
+  function onKick(id) {
+    const p = room.players.find((pp) => pp.id === id);
+    if (p && confirm(`Remove ${p.nickname} from the room?`)) send({ type: "kick", playerId: id });
+  }
   function onLeave() {
     send({ type: "leave" });
-    if (ws) ws.close();
+    exitRoom("");
+  }
+  // Back to the menu and forget the room, whether we left or were turned away.
+  // A failed join goes back to the join form instead, code still filled in.
+  function exitRoom(message, backToJoin = false) {
+    const failedCode = roomCode;
+    const old = ws;
+    ws = null;
+    wsReady = false;
+    if (old) { try { old.close(); } catch {} }
+    clearTimeout(reconnectTimer);
+    reconnectAttempts = 0;
     roomCode = "";
     localStorage.removeItem("matchit_room");
-    view = "menu";
-    room = { status: "lobby", round: 0, hostId: null, players: [], submittedCount: 0, activeCount: 0, history: [] };
+    view = backToJoin ? "nickname" : "menu";
+    if (backToJoin) { pendingAction = "join"; joinCodeDraft = failedCode; }
+    room = EMPTY_ROOM;
+    lastReveal = null;
+    wordDraft = "";
+    revealNote = "";
+    connError = message;
     render();
   }
   function onSubmit(word) {
-    if (!word.trim()) return;
-    submittedRound = room.round;
-    send({ type: "submit", word: word.trim() });
+    word = word.trim();
+    if (!word || !wsReady) return;
+    pendingSubmitRound = room.round;
+    wordDraft = "";
+    send({ type: "submit", word });
     render();
   }
 
@@ -632,11 +789,23 @@
   }
 
   function render() {
-    if (view === "menu") return renderMenu();
-    if (view === "nickname") return renderNickname();
-    if (view === "lobby") return renderLobby();
-    if (view === "playing") return renderPlaying();
-    if (view === "matched") return renderMatched();
+    // Full innerHTML swaps drop focus; put it back where it was so a state
+    // broadcast mid-typing doesn't yank the keyboard away on mobile.
+    const active = document.activeElement;
+    const focusId = active && root.contains(active) ? active.id : "";
+    const caret = focusId && active.selectionStart != null ? [active.selectionStart, active.selectionEnd] : null;
+
+    if (view === "menu") renderMenu();
+    else if (view === "nickname") renderNickname();
+    else if (view === "lobby") renderLobby();
+    else if (view === "playing") renderPlaying();
+    else if (view === "matched") renderMatched();
+
+    const again = focusId && document.getElementById(focusId);
+    if (again) {
+      again.focus();
+      if (caret && again.setSelectionRange) { try { again.setSelectionRange(caret[0], caret[1]); } catch {} }
+    }
   }
 
   function renderMenu() {
@@ -644,7 +813,7 @@
       <div class="screen">
         <h1 class="wordmark">Match It<span class="dot">.</span></h1>
         <p class="tagline">Everyone thinks of a word. Say it at the same time — round after round — until the whole room lands on the same one.</p>
-        ${connError ? `<div class="banner error">${esc(connError)}</div>` : ""}
+        ${connError ? `<div class="banner error" role="alert">${esc(connError)}</div>` : ""}
         <div class="menu-actions">
           <button class="btn btn-primary btn-block" id="btnCreate">Create a room</button>
           <button class="btn btn-block" id="btnJoin">Join with a code</button>
@@ -652,11 +821,12 @@
         <details class="how">
           <summary>How it works</summary>
           <p>Everyone in the room privately writes one word. When everyone's in, all the words are shown. If they don't all match, you go again — you can see every word anyone's written so far. No score, no timer, no race. Just: did the room click?</p>
+          <p>A good opener: two people say random words, then everyone tries to find the word that sits between them.</p>
         </details>
       </div>
     `;
-    document.getElementById("btnCreate").onclick = () => { pendingAction = "create"; view = "nickname"; render(); };
-    document.getElementById("btnJoin").onclick = () => { pendingAction = "join"; view = "nickname"; render(); };
+    document.getElementById("btnCreate").onclick = () => { connError = ""; pendingAction = "create"; view = "nickname"; render(); };
+    document.getElementById("btnJoin").onclick = () => { connError = ""; pendingAction = "join"; view = "nickname"; render(); };
   }
 
   function renderNickname() {
@@ -667,19 +837,21 @@
           <button class="back-btn" id="btnBack" aria-label="Back">←</button>
           <h2 class="screen-title" style="margin:0;">${isJoin ? "Join a room" : "Create a room"}</h2>
         </div>
-        ${connError ? `<div class="banner error">${esc(connError)}</div>` : ""}
-        <label class="field-label" for="nicknameInput">Your name</label>
-        <input type="text" id="nicknameInput" maxlength="24" placeholder="What should we call you?" value="${esc(nickname)}" style="margin-bottom:18px;" />
-        ${isJoin ? `
-          <label class="field-label" for="codeInput">Room code</label>
-          <input type="text" id="codeInput" maxlength="6" inputmode="numeric" placeholder="6-digit code" value="${esc(joinCodeDraft)}" style="margin-bottom:24px; letter-spacing:0.1em;" />
-        ` : ""}
-        <div class="menu-actions" style="padding-top:0;">
-          <button class="btn btn-primary btn-block" id="btnGo">${isJoin ? "Join room" : "Create room"}</button>
-        </div>
+        ${connError ? `<div class="banner error" role="alert" style="margin:0 0 18px;">${esc(connError)}</div>` : ""}
+        <form id="nicknameForm" class="stack" style="flex:1;">
+          <label class="field-label" for="nicknameInput" style="margin:0;">Your name</label>
+          <input type="text" id="nicknameInput" maxlength="24" placeholder="What should we call you?" value="${esc(nickname)}" autocomplete="nickname" style="margin-bottom:6px;" />
+          ${isJoin ? `
+            <label class="field-label" for="codeInput" style="margin:0;">Room code</label>
+            <input type="text" id="codeInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="6-digit code" value="${esc(joinCodeDraft)}" style="letter-spacing:0.1em;" />
+          ` : ""}
+          <div class="menu-actions">
+            <button type="submit" class="btn btn-primary btn-block" id="btnGo">${isJoin ? "Join room" : "Create room"}</button>
+          </div>
+        </form>
       </div>
     `;
-    document.getElementById("btnBack").onclick = () => { view = "menu"; render(); };
+    document.getElementById("btnBack").onclick = () => { connError = ""; view = "menu"; render(); };
     const nameInput = document.getElementById("nicknameInput");
     nameInput.oninput = (e) => { nickname = e.target.value; };
     const codeInput = isJoin ? document.getElementById("codeInput") : null;
@@ -687,8 +859,13 @@
       joinCodeDraft = e.target.value.replace(/\D/g, "").slice(0, 6);
       e.target.value = joinCodeDraft;
     };
+    // Land the cursor on whatever still needs filling in.
+    if (!document.activeElement || document.activeElement === document.body) {
+      (isJoin && nickname && joinCodeDraft.length !== 6 ? codeInput : nameInput).focus();
+    }
 
-    document.getElementById("btnGo").onclick = () => {
+    document.getElementById("nicknameForm").onsubmit = (e) => {
+      e.preventDefault();
       const name = nameInput.value.trim().slice(0, 24) || "Player";
       nickname = name;
       localStorage.setItem("matchit_nickname", name);
@@ -702,39 +879,71 @@
     };
   }
 
+  function roomLink() {
+    return location.origin + location.pathname + "?room=" + roomCode;
+  }
+
+  async function onShare() {
+    const link = roomLink();
+    if (navigator.share) {
+      try { await navigator.share({ title: "Match It", text: `Join my Match It room: ${roomCode}`, url: link }); return; }
+      catch (e) { if (e && e.name === "AbortError") return; }
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      showBanner("Invite link copied.", 2500, "info");
+    } catch {
+      prompt("Copy this invite link:", link);
+    }
+  }
+
   function renderLobby() {
     const selfRole = me() ? me().role : "player";
-    const activeCount = room.players.filter((p) => p.role === "player").length;
-    const canStart = isHost() && activeCount >= 2;
+    const readyCount = room.players.filter((p) => p.role === "player" && p.connected).length;
+    const canStart = isHost() && readyCount >= 2;
+    const hasHistory = room.history.length > 0;
 
     root.innerHTML = `
       <div class="screen">
-        <div class="room-code">${esc(roomCode)}</div>
-        <p class="room-code-hint">Share this code — anyone can join at this page.</p>
-        ${connError ? `<div class="banner error">${esc(connError)}</div>` : ""}
+        <p class="section-label" style="text-align:center;">Room code</p>
+        <div class="room-code" aria-label="Room code ${esc(roomCode.split("").join(" "))}">${esc(roomCode)}</div>
+        <div class="share-row">
+          <button class="btn btn-block" id="btnShare">Share invite link</button>
+        </div>
+        ${connError ? `<div class="banner ${bannerKind}" role="status" style="margin:0 0 18px;">${esc(connError)}</div>` : ""}
+        ${!wsReady && !connError ? `<p class="hint-text" style="margin-bottom:18px;">Connecting…</p>` : ""}
 
         <p class="section-label">In the room (${room.players.length})</p>
         <ul class="player-list">
           ${room.players.map((p) => `
             <li class="player-row">
-              <span class="dot-status ${p.connected ? "on" : ""}"></span>
+              <span class="dot-status ${p.connected ? "on" : ""}" title="${p.connected ? "Connected" : "Disconnected"}"></span>
               <span class="player-name">${esc(p.nickname)}${p.id === playerId ? " (you)" : ""}</span>
               ${p.id === room.hostId ? `<span class="player-tag host">Host</span>` : ""}
               ${p.role === "spectator" ? `<span class="player-tag">Watching</span>` : ""}
+              ${isHost() && p.id !== playerId ? `<button class="kick-btn" data-kick="${esc(p.id)}" aria-label="Remove ${esc(p.nickname)}">✕</button>` : ""}
             </li>
           `).join("")}
         </ul>
+        ${room.players.length < 2 ? `<p class="hint-text" style="text-align:left;">Nobody else yet — share the code or link.</p>` : ""}
 
         <p class="section-label" style="margin-top:22px;">You're</p>
-        <div class="role-toggle">
-          <button class="${selfRole === "player" ? "active" : ""}" id="rolePlayer">Playing</button>
-          <button class="${selfRole === "spectator" ? "active" : ""}" id="roleSpectator">Watching</button>
+        <div class="role-toggle" role="group" aria-label="Your role">
+          <button class="${selfRole === "player" ? "active" : ""}" id="rolePlayer" aria-pressed="${selfRole === "player"}">Playing</button>
+          <button class="${selfRole === "spectator" ? "active" : ""}" id="roleSpectator" aria-pressed="${selfRole === "spectator"}">Watching</button>
         </div>
+
+        ${hasHistory ? `
+          <details class="how" style="margin:0 0 24px;">
+            <summary>Last game (${room.history.length} round${room.history.length === 1 ? "" : "s"})</summary>
+            <div class="stack" style="margin-top:14px;">${room.history.slice().reverse().map(roundBlock).join("")}</div>
+          </details>
+        ` : ""}
 
         <div class="lobby-footer">
           ${isHost() ? `
             <button class="btn btn-primary btn-block" id="btnStart" ${canStart ? "" : "disabled"}>Start</button>
-            ${!canStart ? `<p class="hint-text">Need at least 2 players.</p>` : ""}
+            ${!canStart ? `<p class="hint-text">Need at least 2 connected players.</p>` : ""}
           ` : `<p class="hint-text">Waiting for the host to start…</p>`}
           <button class="btn btn-ghost btn-block" id="btnLeave">Leave room</button>
         </div>
@@ -743,62 +952,81 @@
     document.getElementById("rolePlayer").onclick = () => onSetRole("player");
     document.getElementById("roleSpectator").onclick = () => onSetRole("spectator");
     document.getElementById("btnLeave").onclick = onLeave;
+    document.getElementById("btnShare").onclick = onShare;
+    root.querySelectorAll("[data-kick]").forEach((b) => { b.onclick = () => onKick(b.dataset.kick); });
     const startBtn = document.getElementById("btnStart");
     if (startBtn) startBtn.onclick = onStart;
   }
 
-  function renderPlaying() {
-    const locked = hasSubmittedThisRound();
-    const nicknameOf = (id) => {
-      const p = room.players.find((pp) => pp.id === id);
-      return p ? p.nickname : "Someone";
-    };
-
-    const historyBlocks = room.history.slice().reverse().map((entry) => `
-      <div class="round-block">
+  // One resolved round in the thread. Words that landed together get the
+  // signal colour and a "×N" count, so a near-miss reads as progress.
+  function roundBlock(entry) {
+    const names = entry.names || {};
+    const nameOf = (id) => names[id] || (room.players.find((p) => p.id === id) || {}).nickname || "Someone";
+    const groupOf = {};
+    for (const g of entry.groups || []) for (const id of g) groupOf[id] = g.length;
+    const order = (entry.groups || [Object.keys(entry.words)]).flat();
+    return `
+      <div class="round-block ${entry.matched ? "matched" : ""} ${entry.round === freshRound ? "fresh" : ""}">
         <div class="round-num">Round ${entry.round}${entry.matched ? " — matched" : ""}</div>
-        ${Object.entries(entry.words).map(([pid, word]) => `
-          <div class="word-row ${pid === playerId ? "mine" : ""}">
-            <span class="who">${esc(nicknameOf(pid))}</span>
-            <span class="word">${esc(word)}</span>
-          </div>
-        `).join("")}
-      </div>
-    `).join("");
-
-    const currentBlock = `
-      <div class="round-block">
-        <div class="round-num">Round ${room.round}</div>
-        ${room.players.filter((p) => p.role === "player").map((p) => `
-          <div class="word-row pending ${p.id === playerId ? "mine" : ""}">
-            <span class="who">${esc(p.nickname)}</span>
-            <span class="word">${p.id === playerId && locked ? "sent" : "…"}</span>
+        ${order.filter((id) => id in entry.words).map((id) => `
+          <div class="word-row ${id === playerId ? "mine" : ""} ${!entry.matched && groupOf[id] > 1 ? "close" : ""}">
+            <span class="who">${esc(nameOf(id))}${id === playerId ? " (you)" : ""}</span>
+            <span class="word">${esc(entry.words[id])}</span>
+            ${!entry.matched && groupOf[id] > 1 ? `<span class="pair">×${groupOf[id]}</span>` : ""}
           </div>
         `).join("")}
       </div>
     `;
+  }
 
+  function renderPlaying() {
+    const locked = hasSubmittedThisRound();
+    const spectating = me() && me().role === "spectator";
+    const submitted = new Set(room.submittedIds || []);
+    const historyBlocks = room.history.slice().reverse().map(roundBlock).join("");
+
+    const currentBlock = `
+      <div class="round-block current">
+        <div class="round-num">Round ${room.round} — writing</div>
+        ${room.players.filter((p) => p.role === "player").map((p) => {
+          const isIn = submitted.has(p.id) || (p.id === playerId && locked);
+          const status = !p.connected ? "away" : isIn ? "✓ in" : "thinking…";
+          return `
+            <div class="word-row pending ${p.id === playerId ? "mine" : ""} ${isIn ? "in" : ""} ${!p.connected ? "away" : ""}">
+              <span class="who">${esc(p.nickname)}${p.id === playerId ? " (you)" : ""}</span>
+              <span class="word">${status}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+
+    const firstRound = room.history.length === 0;
     root.innerHTML = `
-      <div class="screen" style="padding-bottom:14px;">
+      <div class="screen play-screen">
         <div class="play-header">
           <span class="round-pill">Round ${room.round}</span>
           <span class="round-pill">${room.submittedCount} of ${room.activeCount} in</span>
         </div>
-        ${connError ? `<div class="banner error" style="margin:0 0 14px;">${esc(connError)}</div>` : ""}
+        ${connError ? `<div class="banner error" role="alert" style="margin:0 0 14px;">${esc(connError)}</div>` : ""}
+        ${revealNote ? `<div class="banner info reveal-note ${freshRound ? "fresh" : ""}" role="status" style="margin:0 0 14px;">${esc(revealNote)}</div>` : ""}
+        ${room.activeCount < 2 ? `<div class="banner info" style="margin:0 0 14px;">Waiting for another player to reconnect…</div>` : ""}
         <div class="thread" id="thread">
           ${currentBlock}
           ${historyBlocks}
         </div>
         <div class="compose">
-          ${me() && me().role === "spectator" ? `
-            <div class="compose-locked">You're watching this round.</div>
+          ${spectating ? `
+            <div class="compose-locked">You're watching this game.</div>
           ` : locked ? `
             <div class="compose-locked">Word sent — waiting on the rest of the room.</div>
           ` : `
             <form id="submitForm">
+              <label class="visually-hidden" for="wordInput">Your word for round ${room.round}</label>
               <div class="compose-row">
-                <input type="text" id="wordInput" maxlength="40" placeholder="Your word…" autocomplete="off" autocorrect="off" spellcheck="false" />
-                <button type="submit" class="btn btn-primary">Send</button>
+                <input type="text" id="wordInput" maxlength="40" placeholder="${firstRound ? "Any word to start…" : "A word between them…"}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" value="${esc(wordDraft)}" />
+                <button type="submit" class="btn btn-primary" ${wsReady ? "" : "disabled"}>Send</button>
               </div>
             </form>
           `}
@@ -807,28 +1035,51 @@
       </div>
     `;
 
+    if (room.history.some((h) => h.round === freshRound)) freshRound = 0;
+
     const form = document.getElementById("submitForm");
     if (form) {
+      const input = document.getElementById("wordInput");
+      input.oninput = (e) => { wordDraft = e.target.value; };
       form.onsubmit = (e) => {
         e.preventDefault();
-        const input = document.getElementById("wordInput");
         onSubmit(input.value);
       };
+      // New round, fresh compose bar: focus it on devices with a real keyboard
+      // (on phones, popping the keyboard unasked hides the thread).
+      if (autoFocusRound !== room.round && matchMedia("(pointer: fine)").matches) {
+        autoFocusRound = room.round;
+        input.focus();
+      }
     }
     const endBtn = document.getElementById("btnEnd");
-    if (endBtn) endBtn.onclick = onEnd;
+    if (endBtn) endBtn.onclick = () => { if (confirm("End this game for everyone?")) onEnd(); };
   }
+  let autoFocusRound = 0;
 
   function renderMatched() {
-    const entry = lastReveal && lastReveal.matched ? lastReveal : room.history[room.history.length - 1];
+    const entry = room.history[room.history.length - 1] || (lastReveal && lastReveal.matched ? lastReveal : null);
     const word = entry ? Object.values(entry.words)[0] : "";
+    const rounds = entry ? entry.round : 0;
+    const watching = me() && me().role === "spectator";
+    const earlier = room.history.filter((h) => !h.matched);
 
     root.innerHTML = `
       <div class="matched-screen">
         <div class="pulse-ring" aria-hidden="true"></div>
-        <p class="matched-label">You matched</p>
+        <p class="matched-label">${watching ? "They matched" : "You matched"}</p>
         <h1 class="matched-word">${esc(word)}</h1>
-        <p class="matched-sub">Everyone landed on it at the same time.</p>
+        <p class="matched-sub">${rounds <= 1 ? "First try. Spooky." : `Everyone landed on it in round ${rounds}.`}</p>
+        ${earlier.length ? `
+          <div class="path" aria-label="How you got there">
+            ${earlier.map((h) => `
+              <div class="path-round">
+                <span class="path-num">${h.round}</span>
+                <span class="path-words">${Object.values(h.words).map(esc).join(" · ")}</span>
+              </div>
+            `).join("")}
+          </div>
+        ` : ""}
         <div class="matched-actions">
           ${isHost()
             ? `<button class="btn btn-primary btn-block" id="btnRematch">Play again</button>`
@@ -859,12 +1110,37 @@
   // ---------------------------------------------------------------------
   // Boot — rejoin a room we were already in, if any
   // ---------------------------------------------------------------------
+  // An invite link (?room=123456) wins over a remembered room: land on the
+  // join form with the code filled in, so all that's left is a name.
+  const linkedRoom = (params.get("room") || "").replace(/\D/g, "").slice(0, 6);
   const savedRoom = localStorage.getItem("matchit_room");
-  if (savedRoom && playerId) {
+  if (linkedRoom.length === 6) {
+    history.replaceState(null, "", location.pathname);
+    if (linkedRoom === savedRoom && playerId) {
+      view = "lobby";
+      connect(savedRoom);
+    } else {
+      joinCodeDraft = linkedRoom;
+      pendingAction = "join";
+      view = "nickname";
+    }
+  } else if (savedRoom && playerId) {
     view = "lobby";
     connect(savedRoom);
   }
   render();
+
+  // Coming back to a backgrounded tab: the socket may have been dropped while
+  // timers were frozen. Say hello right away, or reconnect if it's dead.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || !roomCode) return;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "ping", t: Date.now() }));
+    else if (!ws || ws.readyState > 1) connect(roomCode);
+  });
+
+  if ("serviceWorker" in navigator && location.protocol === "https:") {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
 })();
 </script>
 </body>

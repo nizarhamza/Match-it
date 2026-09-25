@@ -7,9 +7,19 @@
 // submitted, and the only outcome that ends the game is unanimous match (or the
 // host force-ending it).
 
-import { checkMatch, newPlayerId } from "./game-core.js";
+import { checkMatch, groupWords, newPlayerId } from "./game-core.js";
 
 const ROOM_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours idle — same alarm pattern as Answer It
+// A socket nobody has heard from in this long is treated as gone. Clients ping
+// every 20s; a phone that lost signal or locked its screen often never sends
+// a close, and without this the round would wait on that ghost forever.
+const DEFAULT_STALE_SOCKET_MS = 90 * 1000;
+const MAX_PLAYERS = 16; // friend-group scale; keeps a publicly shared link from turning into a flood
+
+// Close codes the client treats as final — stop auto-reconnecting.
+export const CLOSE_ROOM_NOT_FOUND = 4404;
+export const CLOSE_ROOM_FULL = 4409;
+export const CLOSE_KICKED = 4403;
 
 export class Room {
   constructor(state, env) {
@@ -29,8 +39,7 @@ export class Room {
   }
 
   async alarm() {
-    // Idle for 2h straight -> let the room go. A brand new code will be issued
-    // next time someone tries to create one that collides with this (very rare).
+    // Idle for 2h straight -> let the room go, so its code can be issued again.
     await this.state.storage.deleteAll();
   }
 
@@ -40,12 +49,14 @@ export class Room {
     const url = new URL(request.url);
 
     if (url.pathname.endsWith("/create") && request.method === "POST") {
-      let room = await this.loadRoom();
-      if (!room) {
-        const { code } = await request.json();
-        room = this.freshRoom(code);
-        await this.saveRoom(room);
+      // A live room already owns this code: tell the Worker to roll another
+      // one rather than dropping a second group into someone else's room.
+      if (await this.loadRoom()) {
+        return new Response(JSON.stringify({ error: "code_taken" }), { status: 409 });
       }
+      const { code } = await request.json();
+      const room = this.freshRoom(code);
+      await this.saveRoom(room);
       return new Response(JSON.stringify({ code: room.code }), {
         headers: { "content-type": "application/json" },
       });
@@ -66,7 +77,7 @@ export class Room {
       createdAt: Date.now(),
       round: 0,
       players: {}, // id -> { id, nickname, role, connected }
-      history: [], // [{ round, words: {id: word}, matched: bool }]
+      history: [], // [{ round, words: {id: word}, names: {id: nickname}, groups: [[id]], matched }]
       submissions: {}, // this round's in-progress words, {id: word}
     };
   }
@@ -78,28 +89,39 @@ export class Room {
       return new Response("expected websocket", { status: 400 });
     }
 
-    const room = await this.loadRoom();
-    if (!room) {
-      return new Response("room not found", { status: 404 });
-    }
-
     const url = new URL(request.url);
-    const nickname = (url.searchParams.get("nickname") || "Player").slice(0, 24);
+    const nickname = (url.searchParams.get("nickname") || "").trim().slice(0, 24) || "Player";
     const requestedId = url.searchParams.get("pid");
-    const playerId = requestedId && requestedId.startsWith("p_") ? requestedId : newPlayerId();
+    const playerId = requestedId && /^p_[0-9a-f]{12}$/.test(requestedId) ? requestedId : newPlayerId();
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
+    // Refusals still go over an accepted socket: a failed HTTP upgrade is
+    // indistinguishable from a network drop in the browser, so the client
+    // would just retry forever. A close code it recognises lets it give up.
+    const room = await this.loadRoom();
+    const refusal = !room
+      ? { code: "room_not_found", message: "That room doesn't exist (or has expired).", close: CLOSE_ROOM_NOT_FOUND }
+      : !room.players[playerId] && Object.keys(room.players).length >= MAX_PLAYERS
+        ? { code: "room_full", message: `That room is full (${MAX_PLAYERS} max).`, close: CLOSE_ROOM_FULL }
+        : null;
+    if (refusal) {
+      server.accept();
+      this.sendTo(server, { type: "error", code: refusal.code, message: refusal.message });
+      server.close(refusal.close, refusal.code);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
     // Hibernatable accept: the DO can evict from memory between messages and
     // still find this socket again via state.getWebSockets().
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ playerId });
+    server.serializeAttachment({ playerId, lastSeen: Date.now() });
 
     const existing = room.players[playerId];
     if (existing) {
       existing.connected = true;
-      if (nickname) existing.nickname = nickname;
+      existing.nickname = nickname;
     } else {
       room.players[playerId] = {
         id: playerId,
@@ -108,11 +130,16 @@ export class Room {
         connected: true,
       };
     }
-    if (!room.hostId) room.hostId = playerId;
+    if (!room.players[room.hostId]) room.hostId = playerId;
+
+    // Everyone reconnects at once after a restart; clear out whoever didn't.
+    this.markOrphansDisconnected(room);
+    const revealPayload = room.status === "playing" ? this.finalizeRoundIfComplete(room) : null;
 
     await this.saveRoom(room);
 
     this.sendTo(server, { type: "welcome", playerId, code: room.code });
+    if (revealPayload) await this.broadcastReveal(room, revealPayload);
     await this.broadcastState(room);
 
     return new Response(null, { status: 101, webSocket: client });
@@ -130,10 +157,13 @@ export class Room {
     const attachment = ws.deserializeAttachment();
     const playerId = attachment && attachment.playerId;
     if (!playerId) return;
+    ws.serializeAttachment({ ...attachment, lastSeen: Date.now() });
 
-    // ping/pong needs no room state and no broadcast.
+    // Pings double as the room's heartbeat: while anyone is still here, each
+    // one sweeps out sockets that have gone silent.
     if (data.type === "ping") {
       this.sendTo(ws, { type: "pong", t: data.t, serverNow: Date.now() });
+      await this.sweepStaleSockets();
       return;
     }
 
@@ -141,6 +171,7 @@ export class Room {
     if (!room) return;
     const player = room.players[playerId];
     if (!player) return;
+    const isHost = playerId === this.effectiveHost(room);
 
     let changed = false;
     let revealPayload = null;
@@ -155,7 +186,7 @@ export class Room {
       }
 
       case "start": {
-        if (playerId !== room.hostId || room.status !== "lobby") break;
+        if (!isHost || room.status !== "lobby") break;
         const activeIds = this.activePlayerIds(room);
         if (activeIds.length < 2) {
           this.sendTo(ws, {
@@ -165,6 +196,12 @@ export class Room {
           });
           break;
         }
+        // Anyone who wandered off during the lobby is dropped rather than left
+        // as a grey row for the whole game; reconnecting rejoins as a watcher.
+        for (const p of Object.values(room.players)) {
+          if (!p.connected) delete room.players[p.id];
+        }
+        if (!room.players[room.hostId]) room.hostId = playerId;
         room.status = "playing";
         room.round = 1;
         room.history = [];
@@ -175,8 +212,10 @@ export class Room {
 
       case "submit": {
         if (room.status !== "playing" || player.role !== "player") break;
-        const word = String(data.word || "").slice(0, 40);
-        if (!word.trim()) break;
+        const word = String(data.word || "").trim().slice(0, 40);
+        if (!word) break;
+        // One word per round — no peeking at the count and changing your mind.
+        if (room.submissions[playerId] !== undefined) break;
 
         room.submissions[playerId] = word;
         changed = true;
@@ -185,7 +224,7 @@ export class Room {
       }
 
       case "end": {
-        if (playerId !== room.hostId) break;
+        if (!isHost) break;
         if (room.status === "playing" || room.status === "matched") {
           room.status = "lobby";
           room.round = 0;
@@ -196,7 +235,7 @@ export class Room {
       }
 
       case "rematch": {
-        if (playerId !== room.hostId) break;
+        if (!isHost) break;
         room.status = "lobby";
         room.round = 0;
         room.history = [];
@@ -207,12 +246,19 @@ export class Room {
       }
 
       case "kick": {
-        if (playerId !== room.hostId) break;
+        if (!isHost) break;
         const targetId = data.playerId;
-        if (targetId && targetId !== room.hostId && room.players[targetId]) {
+        if (targetId && targetId !== playerId && room.players[targetId]) {
           delete room.players[targetId];
+          if (room.hostId === targetId) room.hostId = playerId;
           delete room.submissions[targetId];
+          for (const sock of this.socketsFor(targetId)) {
+            this.sendTo(sock, { type: "error", code: "kicked", message: "The host removed you from the room." });
+            try { sock.close(CLOSE_KICKED, "kicked"); } catch {}
+          }
           changed = true;
+          // The round may have been waiting on exactly this player.
+          if (room.status === "playing") revealPayload = this.finalizeRoundIfComplete(room);
         }
         break;
       }
@@ -225,6 +271,7 @@ export class Room {
           room.hostId = next ? next.id : null;
         }
         changed = true;
+        if (room.status === "playing") revealPayload = this.finalizeRoundIfComplete(room);
         break;
       }
 
@@ -240,19 +287,60 @@ export class Room {
   }
 
   async webSocketClose(ws) {
-    const attachment = ws.deserializeAttachment();
-    const playerId = attachment && attachment.playerId;
-    if (!playerId) return;
+    await this.reconcileConnections([ws]);
+  }
 
+  async sweepStaleSockets() {
+    const limit = Number(this.env.STALE_SOCKET_MS) || DEFAULT_STALE_SOCKET_MS;
+    const cutoff = Date.now() - limit;
+    const stale = this.state.getWebSockets().filter((sock) => {
+      const att = sock.deserializeAttachment();
+      if (!att) return false;
+      // Sockets accepted before heartbeats existed have no timestamp yet:
+      // start their clock now rather than dropping them unseen.
+      if (att.lastSeen === undefined) {
+        sock.serializeAttachment({ ...att, lastSeen: Date.now() });
+        return false;
+      }
+      return att.lastSeen < cutoff;
+    });
+    for (const sock of stale) {
+      try { sock.close(4000, "stale"); } catch {}
+    }
+    await this.reconcileConnections(stale);
+  }
+
+  // Sync half of reconcileConnections: flags connected players with no live
+  // socket. Returns whether anything changed.
+  markOrphansDisconnected(room, closing = []) {
+    const live = new Set();
+    for (const sock of this.state.getWebSockets()) {
+      if (closing.includes(sock)) continue;
+      const att = sock.deserializeAttachment();
+      if (att && att.playerId) live.add(att.playerId);
+    }
+    let changed = false;
+    for (const player of Object.values(room.players)) {
+      if (player.connected && !live.has(player.id)) {
+        player.connected = false;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // A player is connected iff they have a live socket. Brings stored state in
+  // line with that — `closing` are sockets on their way out that still show
+  // up in getWebSockets(). Also catches players whose socket vanished without
+  // a close event at all (a deploy or runtime restart drops every socket),
+  // who would otherwise sit "connected" forever and block the round.
+  async reconcileConnections(closing = []) {
     const room = await this.loadRoom();
     if (!room) return;
-    const player = room.players[playerId];
-    if (player) player.connected = false;
-
-    if (room.hostId === playerId) {
-      const next = Object.values(room.players).find((p) => p.connected && p.id !== playerId);
-      if (next) room.hostId = next.id;
-    }
+    if (!this.markOrphansDisconnected(room, closing)) return;
+    // Host isn't reassigned here: a refresh closes the old socket before the
+    // new one opens, and the room's creator shouldn't lose host to a reload.
+    // effectiveHost() lets someone else act while they're away.
 
     // A disconnect can be the thing that completes a round that was only
     // waiting on this player's word — recheck, same as a real submission.
@@ -260,7 +348,7 @@ export class Room {
 
     await this.saveRoom(room);
     if (revealPayload) await this.broadcastReveal(room, revealPayload);
-    await this.broadcastState(room);
+    await this.broadcastState(room, closing);
   }
 
   async webSocketError(ws) {
@@ -268,6 +356,24 @@ export class Room {
   }
 
   // ---- helpers ----------------------------------------------------------
+
+  // Who can act as host right now: the room's owner (creator, or whoever it
+  // was handed to on leave) when connected, otherwise the longest-standing
+  // connected player. The owner gets control back when they reconnect.
+  effectiveHost(room) {
+    const owner = room.players[room.hostId];
+    if (owner && owner.connected) return owner.id;
+    const next = Object.values(room.players).find((p) => p.connected);
+    return next ? next.id : room.hostId;
+  }
+
+  // Open sockets belonging to a player.
+  socketsFor(playerId) {
+    return this.state.getWebSockets().filter((sock) => {
+      const att = sock.deserializeAttachment();
+      return att && att.playerId === playerId;
+    });
+  }
 
   // "Active" = who we're actually waiting on right now. A disconnected
   // player can't submit, so they must not block the round from completing —
@@ -281,16 +387,21 @@ export class Room {
   // Checks whether every currently-active player has a submission in for this
   // round, and if so, resolves it: match -> room finishes; no match -> a
   // fresh round starts. Returns the reveal payload to broadcast, or null if
-  // the round isn't complete yet. Called after both a real submission and a
-  // disconnect, since either can be the event that completes a round.
+  // the round isn't complete yet. Called after a submission, a disconnect, a
+  // leave, and a kick, since any of them can be the event that completes a round.
   finalizeRoundIfComplete(room) {
     const activeIds = this.activePlayerIds(room);
     const result = checkMatch(room.submissions, activeIds);
     if (!result.complete) return null;
 
+    const words = Object.fromEntries(activeIds.map((id) => [id, room.submissions[id]]));
     const entry = {
       round: room.round,
-      words: Object.fromEntries(activeIds.map((id) => [id, room.submissions[id]])),
+      words,
+      // Names frozen at reveal time, so the thread still reads right after
+      // someone leaves or is kicked.
+      names: Object.fromEntries(activeIds.map((id) => [id, room.players[id].nickname])),
+      groups: groupWords(words),
       matched: result.matched,
     };
     room.history.push(entry);
@@ -299,8 +410,8 @@ export class Room {
       room.status = "matched";
     } else {
       room.round += 1;
-      room.submissions = {};
     }
+    room.submissions = {};
     return entry;
   }
 
@@ -312,32 +423,33 @@ export class Room {
     }
   }
 
-  async broadcastState(room) {
-    const submittedCount = Object.keys(room.submissions || {}).length;
-    const activeCount = this.activePlayerIds(room).length;
+  async broadcastState(room, skip = []) {
+    const activeIds = this.activePlayerIds(room);
+    const activeCount = activeIds.length;
+    // A word from someone who has since dropped doesn't count toward "N of M in".
+    const submittedIds = activeIds.filter((id) => room.submissions[id] !== undefined);
     const payload = {
       type: "state",
       status: room.status,
       round: room.round,
-      hostId: room.hostId,
+      hostId: this.effectiveHost(room),
       players: Object.values(room.players).map((p) => ({
         id: p.id,
         nickname: p.nickname,
         role: p.role,
         connected: p.connected,
       })),
-      submittedCount,
+      // Who is in, never what they wrote — words only appear in history.
+      submittedIds,
+      submittedCount: submittedIds.length,
       activeCount,
       history: room.history,
     };
-    for (const ws of this.state.getWebSockets()) this.sendTo(ws, payload);
+    for (const ws of this.state.getWebSockets()) if (!skip.includes(ws)) this.sendTo(ws, payload);
   }
 
   async broadcastReveal(room, entry) {
-    const nicknames = Object.fromEntries(
-      Object.values(room.players).map((p) => [p.id, p.nickname])
-    );
-    const payload = { type: "reveal", ...entry, nicknames };
+    const payload = { type: "reveal", ...entry, nicknames: entry.names };
     for (const ws of this.state.getWebSockets()) this.sendTo(ws, payload);
   }
 }
